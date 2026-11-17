@@ -37,10 +37,11 @@
  6、插件正常生效后，可以连接路由器所在wifi，让Switch2自动获取ip和DNS服务器。Switch2获取的DNS服务器地址即插件中设置的Switch 专用伪装辅助 IP，如果在插件中为Switch2指定了静态地址，则Switch2会固定使用这个ip。如果插件设置时没有为Switch2分配静态ip，则由路由器自动分配。也可以在Switch2的连接设置里手动指定ip、DNS，设置值与插件一致就可以正常工作。
  
  7、可以通过查看系统日志中插件的启动日志判断插件是否工作正常。正常工作的插件启动日志如下，可以参考对比：
-[2026年11月17日 GMT+8 23:43:38] user.notice: switch2-block: Applying Switch 2 spoof & block (LAN: 192.168.10.1, Spoof: 192.168.10.254, ForceDHCP: 0, FWMode: firewall_user)
-[2026年11月17日 GMT+8 23:43:38] user.notice: switch2-block: Using fw4 + /etc/firewall.user mode
-[2026年11月17日 GMT+8 23:43:38] daemon.notice: netifd: Interface 'nintendo' is setting up now
-[2026年11月17日 GMT+8 23:43:38] daemon.notice: netifd: Interface 'nintendo' is now up
-[2026年11月17日 GMT+8 23:43:39] user.notice: firewall: Reloading firewall due to ifup of nintendo (br-lan)
-[2026年11月17日 GMT+8 23:43:39] user.notice: nlbwmon: Reloading nlbwmon due to ifup of nintendo (br-lan)
+ 
+      [2026年11月17日 GMT+8 23:43:38] user.notice: switch2-block: Applying Switch 2 spoof & block (LAN: 192.168.10.1, Spoof: 192.168.10.254, ForceDHCP: 0, FWMode: firewall_user)
+      [2026年11月17日 GMT+8 23:43:38] user.notice: switch2-block: Using fw4 + /etc/firewall.user mode
+      [2026年11月17日 GMT+8 23:43:38] daemon.notice: netifd: Interface 'nintendo' is setting up now
+      [2026年11月17日 GMT+8 23:43:38] daemon.notice: netifd: Interface 'nintendo' is now up
+      [2026年11月17日 GMT+8 23:43:39] user.notice: firewall: Reloading firewall due to ifup of nintendo (br-lan)
+      [2026年11月17日 GMT+8 23:43:39] user.notice: nlbwmon: Reloading nlbwmon due to ifup of nintendo (br-lan)
 
