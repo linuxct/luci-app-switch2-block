@@ -15,7 +15,7 @@
 
 <img width="2174" height="1786" alt="01 主界面" src="https://github.com/user-attachments/assets/ea36db0d-8e63-4689-b579-b5c10d78ad58" />
 
-<img width="1632" height="580" alt="02 Switch2设置" src="https://github.com/user-attachments/assets/3c353fcc-dd3d-4770-b090-576829f5dd84" />
+<img width="815" height="290" alt="02 Switch2设置" src="https://github.com/user-attachments/assets/3c353fcc-dd3d-4770-b090-576829f5dd84" />
 
 <img width="550" height="360" alt="03 插件自检" src="https://github.com/user-attachments/assets/4294cbf5-9f59-4922-b679-202821a1597c" />
 
