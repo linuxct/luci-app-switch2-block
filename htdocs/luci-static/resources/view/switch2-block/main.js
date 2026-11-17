@@ -103,19 +103,21 @@ return view.extend({
 			checkFwRule
 		]).then(function(results) {
 			var res = results[0];
-			var fwRuleExists = results[1];
+			var fwRuleInFile = results[1];
 			var rawOut = (res.stdout || '') + (res.stderr || '');
-			var dnsOut = '', httpHeader = '', bodyLen = '0', body = '';
+			var dnsOut = '', httpHeader = '', bodyLen = '0', body = '', fwActiveCount = 0;
 
 			var mDns = rawOut.match(/=== DNS_RESULT ===\n([\s\S]*?)\n=== HTTP_HEADER ===/);
 			var mHdr = rawOut.match(/=== HTTP_HEADER ===\n([\s\S]*?)\n=== HTTP_BODY_LEN ===/);
 			var mLen = rawOut.match(/=== HTTP_BODY_LEN ===\n([\s\S]*?)\n=== HTTP_BODY ===/);
-			var mBody = rawOut.match(/=== HTTP_BODY ===\n([\s\S]*)$/);
+			var mBody = rawOut.match(/=== HTTP_BODY ===\n([\s\S]*?)\n=== FW_ACTIVE_COUNT ===/);
+			var mFw = rawOut.match(/=== FW_ACTIVE_COUNT ===\n([\s\S]*)$/);
 
 			if (mDns && mDns[1]) dnsOut = mDns[1].trim();
 			if (mHdr && mHdr[1]) httpHeader = mHdr[1].trim();
 			if (mLen && mLen[1]) bodyLen = mLen[1].trim();
 			if (mBody && mBody[1]) body = mBody[1];
+			if (mFw && mFw[1]) fwActiveCount = parseInt(mFw[1].trim(), 10) || 0;
 
 			var dnsOk = dnsOut.indexOf(curSpoofIp) !== -1;
 			var httpOk = httpHeader.indexOf('200 OK') !== -1 && body === 'ok' && bodyLen === '2';
@@ -124,9 +126,12 @@ return view.extend({
 			if (!hasBlockDevice) {
 				fwStatusColor = 'green';
 				fwStatusText = _('已跳过 (受控列表未启用断外网设备)');
-			} else if (fwRuleExists) {
+			} else if (fwRuleInFile && fwActiveCount > 0) {
 				fwStatusColor = 'green';
-				fwStatusText = _('已写入阻断规则至 ' + targetFwFile + ' (防硬编码 IP 偷跑生效中)');
+				fwStatusText = _('已写入 ' + targetFwFile + ' 且内核防火墙已实时生效 (共 ' + fwActiveCount + ' 条规则)');
+			} else if (fwRuleInFile && fwActiveCount === 0) {
+				fwStatusColor = '#d9534f';
+				fwStatusText = _('规则已写入 ' + targetFwFile + '，但内核防火墙未加载！建议切换规则写入方式后重新保存');
 			} else {
 				fwStatusColor = '#f0ad4e';
 				fwStatusText = _('未在 ' + targetFwFile + ' 检测到阻断规则 (请确认已点击「保存并应用」)');
