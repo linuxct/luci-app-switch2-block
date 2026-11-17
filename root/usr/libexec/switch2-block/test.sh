@@ -18,3 +18,14 @@ curl -s --noproxy '*' --connect-timeout 3 -m 5 -H "Host: $DOMAIN" "http://$SPOOF
 echo ""
 echo "=== HTTP_BODY ==="
 curl -s --noproxy '*' --connect-timeout 3 -m 5 -H "Host: $DOMAIN" "http://$SPOOF_IP" 2>/dev/null
+
+echo ""
+echo "=== FW_ACTIVE_COUNT ==="
+if [ -x /sbin/fw4 ] || command -v fw4 >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then
+	nft list ruleset 2>/dev/null | grep -c "Block_Switch2_"
+else
+	c1=$(iptables -S FORWARD 2>/dev/null | grep -c "Block_Switch2_")
+	c2=$(ip6tables -S INPUT 2>/dev/null | grep -c "Block_Switch2_")
+	c3=$(ip6tables -S FORWARD 2>/dev/null | grep -c "Block_Switch2_")
+	echo $((c1 + c2 + c3))
+fi
