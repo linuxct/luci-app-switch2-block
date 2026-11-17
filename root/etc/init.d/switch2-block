@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+USE_PROCD=1
+
+SCRIPT="/usr/libexec/switch2-block/apply.sh"
+
+start_service() {
+	"$SCRIPT" start
+}
+
+stop_service() {
+	"$SCRIPT" stop
+}
+
+reload_service() {
+	"$SCRIPT" restart
+}
+
+restart() {
+	"$SCRIPT" restart
+}
+
+service_triggers() {
+	procd_add_reload_trigger "switch2-block"
+}

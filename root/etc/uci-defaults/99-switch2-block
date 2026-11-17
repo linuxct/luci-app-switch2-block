@@ -1,0 +1,37 @@
+#!/bin/sh
+
+chmod +x /usr/libexec/switch2-block/apply.sh
+chmod +x /usr/libexec/switch2-block/test.sh
+chmod +x /etc/init.d/switch2-block
+
+# 仅在首次安装未初始化时自动探测当前 LAN 网段，防止系统升级覆盖用户自定义配置
+if [ "$(uci -q get switch2-block.global._initialized)" != "1" ]; then
+	CUR_LAN_IP=$(uci -q get network.lan.ipaddr | awk '{print $1}' | awk -F'/' '{print $1}')
+	if [ -n "$CUR_LAN_IP" ]; then
+		PREFIX=$(echo "$CUR_LAN_IP" | awk -F'.' '{print $1"."$2"."$3}')
+		LAST_OCTET=$(echo "$CUR_LAN_IP" | awk -F'.' '{print $4}')
+		
+		# 若旁路由自身 IP 已占用 .254，自动避让为 .253
+		if [ "$LAST_OCTET" = "254" ]; then
+			SPOOF_IP="${PREFIX}.253"
+		else
+			SPOOF_IP="${PREFIX}.254"
+		fi
+
+		uci set switch2-block.global.lan_ip="$CUR_LAN_IP"
+		uci set switch2-block.global.spoof_ip="$SPOOF_IP"
+	fi
+	uci set switch2-block.global._initialized='1'
+	uci commit switch2-block
+fi
+
+# Register ucitrack trigger so LuCI "Save & Apply" always reloads the service
+while uci -q delete ucitrack.@switch2-block[0]; do :; done
+uci -q batch <<-EOF
+	add ucitrack switch2-block
+	set ucitrack.@switch2-block[-1].init='switch2-block'
+	commit ucitrack
+EOF
+
+/etc/init.d/switch2-block enable
+exit 0

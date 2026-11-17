@@ -1,0 +1,14 @@
+{
+	"admin/network/switch2-block": {
+		"title": "Switch 2 联网伪装",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "switch2-block/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-switch2-block" ],
+			"uci": { "switch2-block": true }
+		}
+	}
+}
