@@ -16,7 +16,7 @@ is_fw4() {
 	[ -x /sbin/fw4 ] || command -v fw4 >/dev/null 2>&1 || command -v nft >/dev/null 2>&1
 }
 
-# ¶¯Ì¬Ì½²âµ±Ç°Â·ÓÉÆ÷ÕæÊµ LAN IP£¨Ïû³ýÈÎºÎÓ²±àÂë IP£©
+# åŠ¨æ€æŽ¢æµ‹å½“å‰è·¯ç”±å™¨çœŸå®ž LAN IPï¼ˆæ¶ˆé™¤ä»»ä½•ç¡¬ç¼–ç  IPï¼‰
 detect_lan_ip() {
 	local ip
 	ip=$(uci -q get network.lan.ipaddr | awk '{print $1}' | awk -F'/' '{print $1}')
@@ -26,7 +26,7 @@ detect_lan_ip() {
 	echo "$ip"
 }
 
-# ¸ù¾ÝÖ÷ LAN IP ¶¯Ì¬ÍÆµ¼Í¬Íø¶ÎÎ±×°¸¨Öú IP£¨ÈôÖ÷ IP ÒÑÎª .254 Ôò±ÜÈÃÎª .253£©
+# æ ¹æ®ä¸» LAN IP åŠ¨æ€æŽ¨å¯¼åŒç½‘æ®µä¼ªè£…è¾…åŠ© IPï¼ˆè‹¥ä¸» IP å·²ä¸º .254 åˆ™é¿è®©ä¸º .253ï¼‰
 derive_spoof_ip() {
 	local lan_ip="$1"
 	[ -z "$lan_ip" ] && return
@@ -40,7 +40,7 @@ derive_spoof_ip() {
 	fi
 }
 
-# ÃÝµÈ¸¨Öúº¯Êý£º½öµ±Öµ²»Í¬Ê±²ÅÐ´Èë UCI
+# å¹‚ç­‰è¾…åŠ©å‡½æ•°ï¼šä»…å½“å€¼ä¸åŒæ—¶æ‰å†™å…¥ UCI
 uci_set_if_diff() {
 	local cfg="$1" sec="$2" opt="$3" val="$4"
 	local cur
@@ -48,7 +48,7 @@ uci_set_if_diff() {
 	[ "$cur" != "$val" ] && uci set "${cfg}.${sec}.${opt}=${val}"
 }
 
-# ÃÝµÈ¸¨Öúº¯Êý£º°´»»ÐÐ·ûÖðÐÐ¾«È·±È¶Ô list£¬·ÀÖ¹º¬¿Õ¸ñÑ¡Ïî±»²ð·Öµ¼ÖÂÖØ¸´Ð´Èë
+# å¹‚ç­‰è¾…åŠ©å‡½æ•°ï¼šæŒ‰æ¢è¡Œç¬¦é€è¡Œç²¾ç¡®æ¯”å¯¹ listï¼Œé˜²æ­¢å«ç©ºæ ¼é€‰é¡¹è¢«æ‹†åˆ†å¯¼è‡´é‡å¤å†™å…¥
 uci_add_list_unique() {
 	local cfg="$1" sec="$2" opt="$3" val="$4"
 	local existing old_ifs="$IFS"
@@ -514,7 +514,7 @@ start_service() {
 		return 0
 	fi
 
-	# ÈôÎ´ÅäÖÃ IP£¬×Ô¶¯¶¯Ì¬Ì½²â²¢»ØÐ´ UCI£¬¾ø²»Ê¹ÓÃÓ²±àÂë IP
+	# è‹¥æœªé…ç½® IPï¼Œè‡ªåŠ¨åŠ¨æ€æŽ¢æµ‹å¹¶å›žå†™ UCIï¼Œç»ä¸ä½¿ç”¨ç¡¬ç¼–ç  IP
 	if [ -z "$lan_ip" ]; then
 		lan_ip=$(detect_lan_ip)
 		[ -n "$lan_ip" ] && uci_set_if_diff "$CONF" global lan_ip "$lan_ip"
@@ -536,7 +536,7 @@ start_service() {
 	apply_uhttpd "$lan_ip" "$spoof_ip"
 	apply_firewall "$fw_mode"
 
-	/etc/init.d/network reload
+	ifup nintendo >/dev/null 2>&1
 	sleep 1
 	/etc/init.d/dnsmasq restart
 	/etc/init.d/uhttpd restart
@@ -554,9 +554,9 @@ stop_service() {
 	cleanup_firewall
 	cleanup_uhttpd
 	cleanup_dhcp "$lan_ip"
+	ifdown nintendo >/dev/null 2>&1
 	cleanup_network
-
-	/etc/init.d/network reload
+	
 	/etc/init.d/dnsmasq restart
 	/etc/init.d/uhttpd restart
 	/etc/init.d/firewall restart
