@@ -17,7 +17,12 @@
 
 <img width="1632" height="580" alt="02 Switch2设置" src="https://github.com/user-attachments/assets/3c353fcc-dd3d-4770-b090-576829f5dd84" />
 
-<img width="1092" height="718" alt="03 插件自检" src="https://github.com/user-attachments/assets/4294cbf5-9f59-4922-b679-202821a1597c" />
+<img width="550" height="360" alt="03 插件自检" src="https://github.com/user-attachments/assets/4294cbf5-9f59-4922-b679-202821a1597c" />
 
+三、注意事项
+
+ 1、必须在插件中准确设置Switch2的mac地址，只有mac地址正确，才能有效防止Switch2主机访问外网。否则防火墙规则会失效，造成主机联到外网。Switch2主机的mac地址可以直接在主机设置的“互联网”功能中查看。 如果连接了wifi或者未联网状态，这里默认查看的是主机无线网卡的mac地址，如果连接了底座，这里看到的就是底座以太网卡的mac地址。 一定要注意区分！！
+ 
+ 2、由于OpenWRT固件版本众多，兼容性不一，插件不能保证能在所有插件上都能正常工作。因此，为保证不会因为插件工作不正常而造成Switch2主机意外升级，请一定在初次使用插件前，断开路由器的互联网连接！在配置好插件后，首先点击“立即测试伪装服务”按钮，进行插件设置是否生效的检查。只有自建结果3项都返回成功的结果，尤其是防火墙规则状态正常，才能恢复路由器的互联网连接。切记切记!!
 
 
