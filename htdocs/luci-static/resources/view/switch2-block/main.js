@@ -77,17 +77,15 @@ return view.extend({
 			return;
 		}
 
-		// 检查受控设备列表是否有开启断外网的设备
 		var devices = uci.sections('switch2-block', 'device') || [];
 		var hasBlockDevice = devices.some(function(dev) {
 			return dev.mac && (dev.block_wan === '1' || dev.block_wan === undefined);
 		});
 
 		ui.showModal(_('正在执行连通性伪装自检...'), [
-			E('p', { 'class': 'spinning' }, _('正在调用 test.sh 验证 DNS 劫持、uHTTPd 2 字节响应及防火墙规则...'))
+			E('p', { 'class': 'spinning' }, _('正在调用 test.sh 验证 DNS 劫持、uHTTPd 2 字节响应、80 端口占用及防火墙规则...'))
 		]);
 
-		// 根据当前固件架构与用户选择的写入方式，精准核对目标规则文件
 		var targetFwFile = (isFw4 && curFwMode === 'nftables_d')
 			? '/etc/nftables.d/99-switch2-block.nft'
 			: '/etc/firewall.user';
@@ -105,23 +103,48 @@ return view.extend({
 			var res = results[0];
 			var fwRuleInFile = results[1];
 			var rawOut = (res.stdout || '') + (res.stderr || '');
-			var dnsOut = '', httpHeader = '', bodyLen = '0', body = '', fwActiveCount = 0;
+			var dnsOut = '', httpHeader = '', bodyLen = '0', body = '', portOwner = '', fwActiveRules = '';
 
 			var mDns = rawOut.match(/=== DNS_RESULT ===\n([\s\S]*?)\n=== HTTP_HEADER ===/);
 			var mHdr = rawOut.match(/=== HTTP_HEADER ===\n([\s\S]*?)\n=== HTTP_BODY_LEN ===/);
 			var mLen = rawOut.match(/=== HTTP_BODY_LEN ===\n([\s\S]*?)\n=== HTTP_BODY ===/);
-			var mBody = rawOut.match(/=== HTTP_BODY ===\n([\s\S]*?)\n=== FW_ACTIVE_COUNT ===/);
-			var mFw = rawOut.match(/=== FW_ACTIVE_COUNT ===\n([\s\S]*)$/);
+			var mBody = rawOut.match(/=== HTTP_BODY ===\n([\s\S]*?)\n=== HTTP_PORT_OWNER ===/);
+			var mPort = rawOut.match(/=== HTTP_PORT_OWNER ===\n([\s\S]*?)\n=== FW_ACTIVE_RULES ===/);
+			var mFw = rawOut.match(/=== FW_ACTIVE_RULES ===\n([\s\S]*)$/);
 
 			if (mDns && mDns[1]) dnsOut = mDns[1].trim();
 			if (mHdr && mHdr[1]) httpHeader = mHdr[1].trim();
 			if (mLen && mLen[1]) bodyLen = mLen[1].trim();
 			if (mBody && mBody[1]) body = mBody[1];
-			if (mFw && mFw[1]) fwActiveCount = parseInt(mFw[1].trim(), 10) || 0;
+			if (mPort && mPort[1]) portOwner = mPort[1].trim();
+			if (mFw && mFw[1]) fwActiveRules = mFw[1].trim();
 
-			var dnsOk = dnsOut.indexOf(curSpoofIp) !== -1;
+			var fwRuleLines = fwActiveRules ? fwActiveRules.split('\n').filter(function(line) { return line.trim() !== ''; }) : [];
+			var fwActiveCount = fwRuleLines.length;
+
+			// 1. 剥离前两行的 Server/Address 头部，仅检测 Name: 之后的实际解析应答部分
+			var answerPart = dnsOut.split(/Name:/i).slice(1).join('Name:');
+			var dnsOk = answerPart.indexOf(curSpoofIp) !== -1;
+
+			// 2. HTTP 响应校验
 			var httpOk = httpHeader.indexOf('200 OK') !== -1 && body === 'ok' && bodyLen === '2';
 
+			// 3. 独立解析 80 端口监听归属状态
+			var portStatusColor, portStatusText;
+			if (!portOwner) {
+				portStatusColor = '#d9534f';
+				portStatusText = _('异常：未检测到 ' + curSpoofIp + ':80 的监听进程 (uHTTPd 辅助实例未启动)');
+			} else if (portOwner.indexOf('uhttpd') !== -1 && portOwner.indexOf('nginx') === -1) {
+				portStatusColor = 'green';
+				portStatusText = _('正常 (已由 uHTTPd 独占监听 ' + curSpoofIp + ':80，无端口冲突)');
+			} else {
+				var procMatch = portOwner.match(/\(\("([^"]+)"/);
+				var procName = procMatch ? procMatch[1] : _('其他 Web 服务');
+				portStatusColor = '#d9534f';
+				portStatusText = _('冲突：80 端口被「' + procName + '」全局占用！请将其改为仅监听主 LAN IP (' + curLanIp + ':80)');
+			}
+
+			// 4. 防火墙阻断规则状态
 			var fwStatusColor, fwStatusText;
 			if (!hasBlockDevice) {
 				fwStatusColor = 'green';
@@ -137,31 +160,51 @@ return view.extend({
 				fwStatusText = _('未在 ' + targetFwFile + ' 检测到阻断规则 (请确认已点击「保存并应用」)');
 			}
 
-			ui.showModal(_('自检结果'), [
-				E('div', { 'style': 'margin-bottom: 10px;' }, [
+			var preBaseStyle = 'background:#f5f5f5; padding:8px 10px; border:1px solid #e3e3e3; border-radius:4px; font-family:monospace; font-size:12px; line-height:1.45; white-space:pre; overflow-x:auto; overflow-y:auto; margin-bottom:10px;';
+
+			var modalNode = ui.showModal(_('自检结果'), [
+				E('div', { 'style': 'margin-bottom: 6px;' }, [
 					E('strong', {}, _('1. DNS 劫持状态：')),
 					E('span', { 'style': 'color:' + (dnsOk ? 'green' : 'red') + '; font-weight:bold;' },
-						dnsOk ? _('正常 (已解析至 ' + curSpoofIp + ')') : _('异常 (未命中目标 IP)'))
+						dnsOk ? _('正常 (已解析至 ' + curSpoofIp + ')') : _('异常 (未命中目标 IP，请检查全局 DNS 重定向或代理劫持)'))
 				]),
-				E('pre', { 'style': 'background:#f5f5f5; padding:8px; max-height:110px; overflow:auto;' }, dnsOut || _('无输出')),
-				E('div', { 'style': 'margin: 10px 0;' }, [
+				E('pre', { 'style': preBaseStyle + 'max-height:110px;' }, dnsOut || _('无输出')),
+
+				E('div', { 'style': 'margin-bottom: 6px;' }, [
 					E('strong', {}, _('2. HTTP 伪装状态：')),
 					E('span', { 'style': 'color:' + (httpOk ? 'green' : 'red') + '; font-weight:bold;' },
 						httpOk ? _('正常 (返回 200 OK 且正文精确为 2 字节 "ok")') : _('异常 (响应状态或正文字节不符，当前字节数: ' + bodyLen + ')'))
 				]),
-				E('pre', { 'style': 'background:#f5f5f5; padding:8px; max-height:120px; overflow:auto;' },
+				E('pre', { 'style': preBaseStyle + 'max-height:165px;' },
 					(httpHeader ? httpHeader + '\n\n[Body: "' + body + '" | Bytes: ' + bodyLen + ']' : rawOut || _('无输出'))),
-				E('div', { 'style': 'margin: 10px 0;' }, [
-					E('strong', {}, _('3. 防火墙阻断规则状态：')),
+
+				E('div', { 'style': 'margin-bottom: 6px;' }, [
+					E('strong', {}, _('3. 80 端口占用检查：')),
+					E('span', { 'style': 'color:' + portStatusColor + '; font-weight:bold;' }, portStatusText)
+				]),
+				E('pre', { 'style': preBaseStyle + 'max-height:80px;' },
+					portOwner || _('未检测到相关 80 端口监听记录')),
+
+				E('div', { 'style': 'margin-bottom: 6px;' }, [
+					E('strong', {}, _('4. 防火墙阻断规则状态：')),
 					E('span', { 'style': 'color:' + fwStatusColor + '; font-weight:bold;' }, fwStatusText)
 				]),
-				E('div', { 'class': 'right', 'style': 'margin-top: 15px;' }, [
+				E('pre', { 'style': preBaseStyle + 'max-height:180px;' },
+					fwActiveRules || _('内核防火墙中暂无生效的 Switch 2 阻断规则')),
+
+				E('div', { 'class': 'right', 'style': 'margin-top: 12px;' }, [
 					E('button', {
 						'class': 'btn cbi-button-neutral',
 						'click': ui.hideModal
 					}, _('关闭'))
 				])
 			]);
+
+			// 动态拓宽 LuCI 模态弹窗容器，防止长文本折行
+			if (modalNode) {
+				modalNode.style.maxWidth = '860px';
+				modalNode.style.width = '92vw';
+			}
 		}).catch(function(err) {
 			ui.hideModal();
 			ui.addNotification(null, E('p', _('检测执行失败: ') + err.message), 'error');
@@ -202,7 +245,7 @@ return view.extend({
 				_('官方原版 OpenWrt 22.03+ 推荐选择「原生规则目录」；LEDE 等带自定义规则页面的定制固件推荐选择「自定义规则文件」。'));
 			fwModeOpt.value('nftables_d', _('写入 /etc/nftables.d/ 原生规则目录（官方原版通用）'));
 			fwModeOpt.value('firewall_user', _('写入 /etc/firewall.user 自定义规则文件（LEDE 固件默认推荐）'));
-			fwModeOpt.default = 'nftables_d';
+			fwModeOpt.default = 'firewall_user';
 			fwModeOpt.rmempty = false;
 		}
 
