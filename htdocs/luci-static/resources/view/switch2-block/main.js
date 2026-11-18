@@ -202,7 +202,7 @@ return view.extend({
 				_('官方原版 OpenWrt 22.03+ 推荐选择「原生规则目录」；LEDE 等带自定义规则页面的定制固件推荐选择「自定义规则文件」。'));
 			fwModeOpt.value('nftables_d', _('写入 /etc/nftables.d/ 原生规则目录（官方原版通用）'));
 			fwModeOpt.value('firewall_user', _('写入 /etc/firewall.user 自定义规则文件（LEDE 固件默认推荐）'));
-			fwModeOpt.default = 'firewall_user';
+			fwModeOpt.default = 'nftables_d';
 			fwModeOpt.rmempty = false;
 		}
 
