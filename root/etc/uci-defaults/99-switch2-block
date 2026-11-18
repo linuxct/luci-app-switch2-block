@@ -4,14 +4,14 @@ chmod +x /usr/libexec/switch2-block/apply.sh
 chmod +x /usr/libexec/switch2-block/test.sh
 chmod +x /etc/init.d/switch2-block
 
-# ½öÔÚÊ×´Î°²×°Î´³õÊ¼»¯Ê±×Ô¶¯Ì½²âµ±Ç° LAN Íø¶Î£¬·ÀÖ¹ÏµÍ³Éı¼¶¸²¸ÇÓÃ»§×Ô¶¨ÒåÅäÖÃ
+# ä»…åœ¨é¦–æ¬¡å®‰è£…æœªåˆå§‹åŒ–æ—¶è‡ªåŠ¨æ¢æµ‹å½“å‰ LAN ç½‘æ®µï¼Œé˜²æ­¢ç³»ç»Ÿå‡çº§è¦†ç›–ç”¨æˆ·è‡ªå®šä¹‰é…ç½®
 if [ "$(uci -q get switch2-block.global._initialized)" != "1" ]; then
 	CUR_LAN_IP=$(uci -q get network.lan.ipaddr | awk '{print $1}' | awk -F'/' '{print $1}')
 	if [ -n "$CUR_LAN_IP" ]; then
 		PREFIX=$(echo "$CUR_LAN_IP" | awk -F'.' '{print $1"."$2"."$3}')
 		LAST_OCTET=$(echo "$CUR_LAN_IP" | awk -F'.' '{print $4}')
 		
-		# ÈôÅÔÂ·ÓÉ×ÔÉí IP ÒÑÕ¼ÓÃ .254£¬×Ô¶¯±ÜÈÃÎª .253
+		# è‹¥æ—è·¯ç”±è‡ªèº« IP å·²å ç”¨ .254ï¼Œè‡ªåŠ¨é¿è®©ä¸º .253
 		if [ "$LAST_OCTET" = "254" ]; then
 			SPOOF_IP="${PREFIX}.253"
 		else
@@ -24,14 +24,6 @@ if [ "$(uci -q get switch2-block.global._initialized)" != "1" ]; then
 	uci set switch2-block.global._initialized='1'
 	uci commit switch2-block
 fi
-
-# Register ucitrack trigger so LuCI "Save & Apply" always reloads the service
-while uci -q delete ucitrack.@switch2-block[0]; do :; done
-uci -q batch <<-EOF
-	add ucitrack switch2-block
-	set ucitrack.@switch2-block[-1].init='switch2-block'
-	commit ucitrack
-EOF
 
 /etc/init.d/switch2-block enable
 exit 0
