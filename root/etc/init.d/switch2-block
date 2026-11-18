@@ -18,10 +18,6 @@ reload_service() {
 	"$SCRIPT" restart
 }
 
-restart() {
-	"$SCRIPT" restart
-}
-
 service_triggers() {
 	procd_add_reload_trigger "switch2-block"
 }
