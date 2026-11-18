@@ -20,12 +20,21 @@ echo "=== HTTP_BODY ==="
 curl -s --noproxy '*' --connect-timeout 3 -m 5 -H "Host: $DOMAIN" "http://$SPOOF_IP" 2>/dev/null
 
 echo ""
-echo "=== FW_ACTIVE_COUNT ==="
-if [ -x /sbin/fw4 ] || command -v fw4 >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then
-	nft list ruleset 2>/dev/null | grep -c "Block_Switch2_"
+echo "=== HTTP_PORT_OWNER ==="
+if command -v ss >/dev/null 2>&1; then
+	ss -tulnp 2>/dev/null | grep -E "(0\.0\.0\.0:80|${SPOOF_IP}:80|\*:80)"
 else
-	c1=$(iptables -S FORWARD 2>/dev/null | grep -c "Block_Switch2_")
-	c2=$(ip6tables -S INPUT 2>/dev/null | grep -c "Block_Switch2_")
-	c3=$(ip6tables -S FORWARD 2>/dev/null | grep -c "Block_Switch2_")
-	echo $((c1 + c2 + c3))
+	netstat -tulnp 2>/dev/null | grep -E "(0\.0\.0\.0:80|${SPOOF_IP}:80)"
+fi
+
+echo ""
+echo "=== FW_ACTIVE_RULES ==="
+if [ -x /sbin/fw4 ] || command -v fw4 >/dev/null 2>&1 || command -v nft >/dev/null 2>&1; then
+	nft list ruleset 2>/dev/null | grep "Block_Switch2_" | sed 's/^[ \t]*//'
+else
+	{
+		iptables -S FORWARD 2>/dev/null | grep "Block_Switch2_"
+		ip6tables -S INPUT 2>/dev/null | grep "Block_Switch2_"
+		ip6tables -S FORWARD 2>/dev/null | grep "Block_Switch2_"
+	}
 fi
