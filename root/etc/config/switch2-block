@@ -1,7 +1,7 @@
 config global 'global'
 	option enabled '0'
 	option force_dhcp '0'
-	option fw_mode 'firewall_user'
+	option fw_mode 'nftables_d'
 	option lan_ip ''
 	option spoof_ip ''
 	option test_domain 'ctest.p01.ctest.srv.nintendo.net'
