@@ -45,17 +45,26 @@ msgstr "伪装辅助 IP 不能与路由器主 LAN IP 相同！"
 msgid "Use a Switch Helper IP in the same /24 subnet as the Router LAN IP, such as %s.254."
 msgstr "伪装辅助 IP 必须与主 LAN IP 处于同一 /24 网段（如 %s.254）！"
 
-msgid "Nintendo Connection Test Domain"
+msgid "Nintendo Connection Test Domains"
 msgstr "任天堂联网测试域名"
 
-msgid "Default: ctest.p01.ctest.srv.nintendo.net. Usually no change is needed."
-msgstr "默认拦截 ctest.p01.ctest.srv.nintendo.net，通常无需修改。"
+msgid "Enter one to eight domains. The default is ctest.p01.ctest.srv.nintendo.net."
+msgstr "请输入 1 至 8 个域名。默认域名为 ctest.p01.ctest.srv.nintendo.net。"
+
+msgid "Enter a valid DNS hostname using ASCII letters, digits, hyphens and dots."
+msgstr "请输入有效的 DNS 主机名，仅使用 ASCII 字母、数字、连字符和点。"
+
+msgid "Enter between one and eight connection test domains."
+msgstr "请输入 1 至 8 个联网测试域名。"
+
+msgid "Connection test domains must be unique regardless of letter case."
+msgstr "联网测试域名不能重复，不区分大小写。"
 
 msgid "Connection Self-Test"
 msgstr "服务连通性自检"
 
-msgid "Click Save & Apply first. The self-test checks the local DNS answer, exact HTTP response, listener and active isolation policy for all enrolled MACs."
-msgstr "请先点击「保存并应用」。自检将核对本机 DNS 回答、HTTP 响应的实际内容、监听端口，以及所有已登记 MAC 地址的隔离规则是否生效。"
+msgid "Click Save & Apply first. The self-test checks local DNS and the exact HTTP response for each configured domain, the listener and the active isolation policy for all enrolled MACs."
+msgstr "请先点击「保存并应用」。自检将核对每个已配置域名的本机 DNS 回答及 HTTP 响应的确切内容，并检查监听端口和所有已登记 MAC 地址的隔离规则是否生效。"
 
 msgid "Run Self-Test"
 msgstr "立即测试伪装服务"

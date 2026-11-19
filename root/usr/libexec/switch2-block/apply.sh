@@ -1,6 +1,7 @@
 #!/bin/sh
 # Switch 2 Connection Spoof & Update Blocker core management script
 . /lib/functions.sh
+. /usr/libexec/switch2-block/domains.sh
 
 CONF="switch2-block"
 CGI_DIR="/www_nintendo/cgi-bin"
@@ -85,6 +86,19 @@ cleanup_network() {
 	fi
 }
 
+delete_tagged_hosts() {
+	local rows section
+	# Use stable section IDs; anonymous indexes shift after each deletion.
+	rows=$(uci -q -X show dhcp) || return 1
+	for section in $(printf '%s\n' "$rows" | awk '
+		/^dhcp\.[A-Za-z0-9_]+=host$/ { sub(/=host$/, ""); host[$0]=1 }
+		/^dhcp\.[A-Za-z0-9_]+\.tag=\047switch2\047$/ {
+			sub(/\.tag=.*/, ""); if (host[$0]) print
+		}'); do
+		uci -q delete "$section" || { log_msg "Could not remove managed DHCP host $section"; return 1; }
+	done
+}
+
 cleanup_dhcp() {
 	local lan_ip="$1"
 	local old_lan_ip
@@ -94,11 +108,7 @@ cleanup_dhcp() {
 	uci -q delete dhcp.nintendo_dns
 	uci -q delete dhcp.switch2
 
-	while uci -q show dhcp | grep -q "dhcp\.@host\[[0-9]*\]\.tag='switch2'"; do
-		local idx
-		idx=$(uci -q show dhcp | grep "dhcp\.@host\[[0-9]*\]\.tag='switch2'" | head -n1 | sed -E 's/.*@host\[([0-9]+)\].*/\1/')
-		[ -n "$idx" ] && uci -q delete dhcp.@host[$idx]
-	done
+	delete_tagged_hosts || return 1
 
 	if [ "$(uci -q get dhcp.main_dns._switch2_managed)" = "1" ]; then
 		[ "$(uci -q get dhcp.main_dns._sw2_add_lan)" = "1" ] && [ -n "$old_lan_ip" ] && uci -q del_list dhcp.main_dns.listen_address="$old_lan_ip"
@@ -198,7 +208,7 @@ apply_network() {
 apply_dhcp() {
 	local lan_ip="$1"
 	local spoof_ip="$2"
-	local domain="$3"
+	local domains="$3" domain expected current
 
 	if ! uci -q get dhcp.main_dns >/dev/null; then
 		if uci -q get dhcp.@dnsmasq[0] >/dev/null; then
@@ -257,9 +267,19 @@ apply_dhcp() {
 	uci_set_if_diff dhcp nintendo_dns localuse '0'
 	uci_set_if_diff dhcp nintendo_dns rebind_protection '0'
 
-	if [ "$(uci -q get dhcp.nintendo_dns.address)" != "/${domain}/${spoof_ip}" ]; then
-		uci -q delete dhcp.nintendo_dns.address
-		uci add_list dhcp.nintendo_dns.address="/${domain}/${spoof_ip}"
+	expected=$(printf '%s\n' "$domains" | while IFS= read -r domain; do
+		printf '/%s/%s\n' "$domain" "$spoof_ip"
+	done)
+	if current=$(uci -q -d '
+' get dhcp.nintendo_dns.address); then
+		[ "$current" = "$expected" ] || uci -q delete dhcp.nintendo_dns.address || return 1
+	fi
+	if [ "$current" != "$expected" ]; then
+		while IFS= read -r domain; do
+			uci add_list "dhcp.nintendo_dns.address=$domain" || return 1
+		done <<EOF
+$expected
+EOF
 	fi
 	uci_set_if_diff dhcp nintendo_dns server '/#/'
 	uci_set_if_diff dhcp nintendo_dns leasefile '/tmp/dhcp.leases.nintendo'
@@ -272,11 +292,7 @@ apply_dhcp() {
 		uci add_list dhcp.switch2.dhcp_option="6,${spoof_ip}"
 	fi
 
-	while uci -q show dhcp | grep -q "dhcp\.@host\[[0-9]*\]\.tag='switch2'"; do
-		local idx
-		idx=$(uci -q show dhcp | grep "dhcp\.@host\[[0-9]*\]\.tag='switch2'" | head -n1 | sed -E 's/.*@host\[([0-9]+)\].*/\1/')
-		[ -n "$idx" ] && uci -q delete dhcp.@host[$idx]
-	done
+	delete_tagged_hosts || return 1
 
 	add_host_entry() {
 		local cfg="$1"
@@ -345,8 +361,18 @@ apply_uhttpd() {
 	uci commit uhttpd
 }
 
+activate_helper_address() {
+	local expected="$1" status addresses
+	status=$(ifstatus nintendo 2>/dev/null) &&
+		[ "$(printf '%s\n' "$status" | jsonfilter -e '@.up')" = true ] &&
+		addresses=$(printf '%s\n' "$status" | jsonfilter -e '@["ipv4-address"][*].address') &&
+		printf '%s\n' "$addresses" | grep -Fxq "$expected" &&
+		return 0
+	ifup nintendo
+}
+
 start_service() {
-	local enabled lan_ip spoof_ip test_domain
+	local enabled lan_ip spoof_ip domains
 	enabled=$(uci -q get "/etc/config/$CONF.global.enabled") || return 1
 	case "$enabled" in
 		0) disable_service; return $? ;;
@@ -356,19 +382,23 @@ start_service() {
 	config_load "/etc/config/$CONF" || return 1
 	config_get lan_ip global lan_ip ""
 	config_get spoof_ip global spoof_ip ""
-	config_get test_domain global test_domain "ctest.p01.ctest.srv.nintendo.net"
 
 	if [ -z "$lan_ip" ] || [ -z "$spoof_ip" ] || [ "$lan_ip" = "$spoof_ip" ]; then
 		log_msg "Error: Invalid or undetected LAN/Spoof IP (LAN: '$lan_ip', Spoof: '$spoof_ip'), aborting."
 		return 1
 	fi
 
+	domains=$(switch2_test_domains) || {
+		log_msg "Invalid Nintendo test domain list; leaving the existing policy and helper configuration unchanged"
+		return 1
+	}
+
 	# Install and verify isolation before changing *any* network listeners.
 	"$POLICY" apply || { log_msg "Isolation apply failed; do not connect the console"; return 1; }
 	/etc/init.d/switch2-guard enabled || /etc/init.d/switch2-guard enable || return 1
 	retire_legacy_rules || return 1
-	apply_network "$spoof_ip" && apply_dhcp "$lan_ip" "$spoof_ip" "$test_domain" &&
-		apply_uhttpd "$lan_ip" "$spoof_ip" && ifup nintendo &&
+	apply_network "$spoof_ip" && apply_dhcp "$lan_ip" "$spoof_ip" "$domains" &&
+		apply_uhttpd "$lan_ip" "$spoof_ip" && activate_helper_address "$spoof_ip" &&
 		/etc/init.d/dnsmasq restart && /etc/init.d/uhttpd restart || {
 		log_msg "Helper setup failed; isolation remains installed"
 		return 1
@@ -386,7 +416,7 @@ disable_service() {
 			uci -q get uhttpd.nintendo_ctest >/dev/null; then
 		log_msg "Removing Switch helpers after explicit disable"
 		cleanup_uhttpd
-		cleanup_dhcp "$lan_ip"
+		cleanup_dhcp "$lan_ip" || return 1
 		ifdown nintendo >/dev/null 2>&1
 		cleanup_network
 		/etc/init.d/dnsmasq restart && /etc/init.d/uhttpd restart || return 1

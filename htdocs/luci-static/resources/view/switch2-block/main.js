@@ -7,6 +7,7 @@
 'require rpc';
 
 var config = 'switch2-block';
+var defaultDomain = 'ctest.p01.ctest.srv.nintendo.net';
 var getLanAddresses = rpc.declare({
 	object: 'network.interface.lan', method: 'status', expect: { 'ipv4-address': [] }
 });
@@ -18,6 +19,40 @@ function validLocalIP(value) {
 	var octets = value.split('.').map(Number);
 	return octets[0] > 0 && octets[0] !== 127 && octets[0] < 224 &&
 		octets.every(function(octet) { return octet <= 255; });
+}
+
+function domainList(value) {
+	return Array.isArray(value) ? value : [ value == null ? defaultDomain : value ];
+}
+
+function sameDomains(a, b) {
+	return a.length === b.length && a.every(function(value, i) { return value === b[i]; });
+}
+
+function validateDomain(value) {
+	if (typeof value === 'string' && value.length <= 253 && value.split('.').every(function(label) {
+		return label.length > 0 && label.length <= 63 &&
+			!/[^A-Za-z0-9-]/.test(label) && label[0] !== '-' && label[label.length - 1] !== '-';
+	}))
+		return true;
+	return _('Enter a valid DNS hostname using ASCII letters, digits, hyphens and dots.');
+}
+
+function validateDomains(values) {
+	if (!values.length || values.length > 8)
+		return _('Enter between one and eight connection test domains.');
+
+	var seen = new Set();
+	for (var i = 0; i < values.length; i++) {
+		var result = validateDomain(values[i]);
+		if (result !== true)
+			return result;
+		var hostname = values[i].toLowerCase();
+		if (seen.has(hostname))
+			return _('Connection test domains must be unique regardless of letter case.');
+		seen.add(hostname);
+	}
+	return true;
 }
 
 // Called after LuCI has parsed every row, but before it saves anything to rpcd.
@@ -151,15 +186,50 @@ return view.extend({
 			return true;
 		};
 
-		domainOpt = s.option(form.Value, 'test_domain', _('Nintendo Connection Test Domain'),
-			_('Default: ctest.p01.ctest.srv.nintendo.net. Usually no change is needed.'));
-		domainOpt.datatype = 'hostname';
-		domainOpt.default = 'ctest.p01.ctest.srv.nintendo.net';
-		domainOpt.placeholder = 'ctest.p01.ctest.srv.nintendo.net';
+		domainOpt = s.option(form.DynamicList, 'test_domain', _('Nintendo Connection Test Domains'),
+			_('Enter one to eight domains. The default is ctest.p01.ctest.srv.nintendo.net.'));
+		domainOpt.placeholder = defaultDomain;
 		domainOpt.rmempty = false;
+		// The add box is optional; parse() still requires a nonempty saved list.
+		domainOpt.validate = function(id, value) { return value === '' || validateDomain(value); };
+
+		// DynamicList's getValue() can omit invalid, whitespace-only or duplicate
+		// text still in the add box. Read it directly for validation and comparison.
+		function readDomainDraft(id) {
+			var node = domainOpt.getUIElement(id).node;
+			return {
+				items: Array.from(node.querySelectorAll('.item > input[type="hidden"]'), function(input) {
+					return input.value;
+				}),
+				pending: node.querySelector('.add-item > input[type="text"]').value
+			};
+		}
+		var domainDraft, renderDomainWidget = domainOpt.renderWidget;
+		domainOpt.renderWidget = function(id, index, value) {
+			// Wrap legacy scalars explicitly: LuCI otherwise splits them on whitespace.
+			var node = renderDomainWidget.call(this, id, index, domainDraft ? domainDraft.items : domainList(value));
+			if (domainDraft)
+				node.querySelector('.add-item > input[type="text"]').value = domainDraft.pending;
+			return node;
+		};
+		domainOpt.formvalue = function(id) {
+			var draft = readDomainDraft(id);
+			if (draft.pending !== '') draft.items.push(draft.pending);
+			return draft.items;
+		};
+		domainOpt.parse = function(id) {
+			var values = this.formvalue(id), result = validateDomains(values);
+			if (result !== true)
+				return Promise.reject(new Error(result));
+			var saved = this.cfgvalue(id);
+			// An unchanged legacy scalar still needs to become a list on Save.
+			if (!Array.isArray(saved) || !sameDomains(values, saved))
+				this.write(id, values);
+			return Promise.resolve();
+		};
 
 		o = s.option(form.Button, '_test_btn', _('Connection Self-Test'),
-			_('Click Save & Apply first. The self-test checks the local DNS answer, exact HTTP response, listener and active isolation policy for all enrolled MACs.'));
+			_('Click Save & Apply first. The self-test checks local DNS and the exact HTTP response for each configured domain, the listener and the active isolation policy for all enrolled MACs.'));
 		o.inputtitle = _('Run Self-Test');
 		o.onclick = L.bind(function() { return this.runTest(checkDisplayed); }, this);
 
@@ -201,7 +271,7 @@ return view.extend({
 		blockOpt.default = '1';
 		blockOpt.rmempty = false;
 
-		var globalFields = [enableOpt, lanOpt, spoofOpt, domainOpt];
+		var globalFields = [enableOpt, lanOpt, spoofOpt];
 		var adapterFields = [nameOpt, macOpt, o, blockOpt];
 
 		// TableSection normally stages UCI on row edits. Keep incomplete rows in
@@ -212,13 +282,14 @@ return view.extend({
 			});
 		}
 		function editRows(removeId) {
+			domainDraft = readDomainDraft('global');
 			keepDraft(globalFields, 'global');
 			devices.cfgsections().forEach(function(id) {
 				if (id !== removeId) keepDraft(adapterFields, id);
 			});
 			if (removeId != null) uci.remove(config, removeId);
 			else uci.add(config, 'device');
-			return m.render();
+			return m.render().finally(function() { domainDraft = null; });
 		}
 		devices.handleAdd = function() { return editRows(null); };
 		devices.handleRemove = editRows;
@@ -237,6 +308,7 @@ return view.extend({
 				var changed = Object.keys(changes).some(function(key) { return changes[key].length > 0; });
 				var savedIds = Object.keys(saved).filter(function(id) { return saved[id]['.type'] === 'device'; });
 				if (changed || !saved.global || !fieldsMatch(globalFields, 'global', saved.global) ||
+				    !sameDomains(domainOpt.formvalue('global'), domainList(saved.global.test_domain)) ||
 				    ids.length !== savedIds.length || !ids.every(function(id) {
 					    return savedIds.indexOf(id) !== -1 && fieldsMatch(adapterFields, id, saved[id]);
 				    }))

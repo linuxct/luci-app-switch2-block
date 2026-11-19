@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '安装包版本号（例如 1.0.0，留空则使用 Makefile 默认值）'
+        description: '安装包版本号（例如 1.0.0，不含 -r 修订号；留空则使用标签或 Makefile 默认值）'
         required: false
         type: string
       release_tag:
@@ -27,69 +27,122 @@ jobs:
         include:
           - sdk_ver: "23.05.5"
             format: "ipk"
+            sdk_file: openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            sdk_sha256: 9e5b6813a3f810123391f5f3ea10dfd1c14be1a880f410c70ec4424bbd1573d2
           - sdk_ver: "25.12.6"
             format: "apk"
+            sdk_file: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            sdk_sha256: 1864152619092e781fa36a401960c8e9ae42d6a364c44ee5f0b197ca5f3c0fcc
 
     steps:
       - name: Checkout plugin code
         uses: actions/checkout@v4
         with:
           path: luci-app-switch2-block
+          persist-credentials: false
 
-      - name: Cache OpenWrt SDK
+      - name: Restore OpenWrt SDK
         id: cache-sdk
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: sdk
-          key: openwrt-sdk-v1-${{ matrix.sdk_ver }}
+          key: openwrt-sdk-v2-${{ runner.os }}-${{ matrix.sdk_sha256 }}
 
-      - name: Download and setup SDK (Skipped if cached)
+      - name: Download and set up SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         env:
           VER: ${{ matrix.sdk_ver }}
+          SDK_FILE: ${{ matrix.sdk_file }}
+          SDK_SHA256: ${{ matrix.sdk_sha256 }}
         run: |
-          HOST="downloads.openwrt.org"
-          PATH_DIR="releases/${VER}/targets/x86/64/"
-          SDK_URL="https://${HOST}/${PATH_DIR}"
-          SDK_FILE=$(curl -sL "$SDK_URL" | grep -oE "openwrt-sdk-${VER}-x86-64_gcc-[^\"']+\.tar\.(xz|zst)" | head -n 1)
-          echo "Downloading ${SDK_URL}${SDK_FILE}..."
-          wget -q "${SDK_URL}${SDK_FILE}"
-          mkdir -p sdk
-          tar -xf "$SDK_FILE" -C sdk --strip-components=1
+          set -euo pipefail
+          archive=$(mktemp)
+          trap 'rm -f -- "$archive"' EXIT
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://downloads.openwrt.org/releases/$VER/targets/x86/64/$SDK_FILE"
+          printf '%s  %s\n' "$SDK_SHA256" "$archive" | sha256sum --check
+          rm -rf -- sdk
+          mkdir sdk
+          tar --extract --file "$archive" --directory sdk --strip-components=1
+          rm -f -- "$archive"
           cd sdk
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Set package version and compile
+      # Cache the prepared SDK, never the local source or anything built from it.
+      - name: Save prepared SDK
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: sdk
+          key: ${{ steps.cache-sdk.outputs.cache-primary-key }}
+
+      - name: Build and collect fresh packages
         env:
           INPUT_VER: ${{ github.event.inputs.version }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
-        run: |
-          rm -rf sdk/package/luci-app-switch2-block
-          cp -r luci-app-switch2-block sdk/package/
-          
-          TARGET_VER="$INPUT_VER"
-          if [ -z "$TARGET_VER" ] && [ "$REF_TYPE" = "tag" ]; then
-            TARGET_VER="${REF_NAME#v}"
-          fi
-          
-          if [ -n "$TARGET_VER" ]; then
-            echo "Setting PKG_VERSION to $TARGET_VER"
-            sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${TARGET_VER}/g" sdk/package/luci-app-switch2-block/Makefile
-          fi
-
-          cd sdk
-          make defconfig
-          make package/luci-app-switch2-block/compile V=s
-
-      - name: Collect built packages
-        env:
           PACKAGE_FORMAT: ${{ matrix.format }}
+          LC_ALL: C
         run: |
-          mkdir -p release_files
-          find sdk/bin/packages/ -type f -name "*switch2-block*.${PACKAGE_FORMAT}" -exec cp {} release_files/ \;
-          ls -lh release_files/
+          set -euo pipefail
+          # Inputs and tag names are data; only a dotted numeric version may enter Make.
+          makefile=luci-app-switch2-block/Makefile
+          target_ver="$INPUT_VER"
+          if [[ -z "$target_ver" ]]; then
+            if [[ "$REF_TYPE" == tag ]]; then
+              target_ver="${REF_NAME#v}"
+            else
+              target_ver=$(sed -n 's/^SWITCH2_BLOCK_VERSION:=//p' "$makefile")
+            fi
+          fi
+          if [[ ! "$target_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Package version must be in X.Y.Z format, without a package revision.' >&2
+            exit 1
+          fi
+          release=$(sed -n 's/^PKG_RELEASE:=//p' "$makefile")
+          package_ver="$target_ver-r$release"
+
+          rm -rf -- sdk/package/luci-app-switch2-block \
+            sdk/build_dir/target-*/luci-app-switch2-block release_files
+          cp -r luci-app-switch2-block sdk/package/
+          sed -i "s/^SWITCH2_BLOCK_VERSION:=.*/SWITCH2_BLOCK_VERSION:=$target_ver/" \
+            "sdk/package/$makefile"
+
+          # The SDK can emit to a feed or target directory. Both must be fresh.
+          output=$(mktemp -d "$PWD/sdk/switch2-output.XXXXXX")
+          trap 'rm -rf -- "$output"' EXIT
+          make -C sdk defconfig
+          # This package is architecture-independent; only LuCI's host
+          # minifier/translation compiler is needed to build it.
+          make -C sdk package/feeds/luci/luci-base/host/compile NO_DEPS=1 V=s
+          make -C sdk package/luci-app-switch2-block/compile NO_DEPS=1 OUTPUT_DIR="$output" V=s
+
+          shopt -s nullglob globstar
+          if [[ "$PACKAGE_FORMAT" == apk ]]; then
+            app=("$output"/**/"luci-app-switch2-block-$package_ver.apk")
+            translation=("$output"/**/luci-i18n-switch2-block-zh-cn-[0-9]*.apk)
+          else
+            app=("$output"/**/"luci-app-switch2-block_${package_ver}_all.ipk")
+            translation=("$output"/**/luci-i18n-switch2-block-zh-cn_*_all.ipk)
+          fi
+          if ((${#app[@]} != 1 || ${#translation[@]} != 1)); then
+            echo 'Expected exactly one app package and one zh-cn translation from this build.' >&2
+            exit 1
+          fi
+          # APK uses '-' for both package names and version separators.
+          if [[ "$PACKAGE_FORMAT" == apk && ! "${translation[0]##*/}" =~ ^luci-i18n-switch2-block-zh-cn-[0-9]{2}\.[0-9]{3}\.[0-9]{5}~[0-9a-f]{7,}\.apk$ ]]; then
+            echo 'Unexpected APK translation filename from the pinned LuCI SDK.' >&2
+            exit 1
+          fi
+          for package in "${app[0]}" "${translation[0]}"; do
+            if [[ ! -f "$package" || -L "$package" ]]; then
+              echo "Not a regular package file: $package" >&2
+              exit 1
+            fi
+          done
+          mkdir release_files
+          cp -- "${app[0]}" "${translation[0]}" release_files/
 
       - name: Sign and verify APKs
         if: matrix.format == 'apk'
@@ -115,7 +168,7 @@ jobs:
 
           shopt -s nullglob
           apks=(release_files/*.apk)
-          ((${#apks[@]})) || { echo "No APKs to sign" >&2; exit 1; }
+          ((${#apks[@]} == 2)) || { echo "Expected exactly two APKs to sign" >&2; exit 1; }
           apk=sdk/staging_dir/host/bin/apk
           # apk-tools 3.0.5 only adds a signature to the first file per invocation.
           for package in "${apks[@]}"; do
@@ -125,6 +178,9 @@ jobs:
           cp "luci-app-switch2-block/$public_key" release_files/
 
       - name: Upload build artifacts
+        # Old IPKs can remove the live guard before opkg invokes our hooks.
+        # Keep the IPK compile check, but do not distribute an upgrade artifact.
+        if: matrix.format == 'apk'
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.format }}
@@ -138,11 +194,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download signed APK artifacts
         uses: actions/download-artifact@v4
         with:
+          name: packages-apk
           path: all_packages
-          merge-multiple: true
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

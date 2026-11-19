@@ -6,6 +6,7 @@ if [ "$#" -ne 1 ]; then echo "usage: $0 /path/to/openwrt-rootfs" >&2; exit 2; fi
 root=$(realpath "$1")
 [ -x "$root/sbin/uci" ] && [ -f "$root/lib/functions.sh" ] || { echo 'Expected an OpenWrt rootfs' >&2; exit 2; }
 policy=$(realpath "$(dirname "$0")/../root/usr/libexec/switch2-block/policy.sh")
+domains=$(realpath "$(dirname "$policy")/domains.sh")
 work=$(mktemp -d); trap 'rmdir "$work"' EXIT
 unshare --user --map-root-user --mount --net --pid --fork sh -eu -c '
  mount --make-rprivate /
@@ -14,8 +15,9 @@ unshare --user --map-root-user --mount --net --pid --fork sh -eu -c '
  cd "$2/root"; mount -t proc proc proc; mount -t tmpfs tmpfs tmp
  mkdir -p tmp/lock; touch dev/null; mount --bind /dev/null dev/null
  cp "$3" tmp/policy.sh
+ cp "$4" tmp/domains.sh
  exec chroot . /bin/sh -eu
-' sh "$root" "$work" "$policy" <<'TEST'
+' sh "$root" "$work" "$policy" "$domains" <<'TEST'
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 mkdir -p /var/lock /etc/config
 printf "config defaults\n\toption flow_offloading 0\n" >/etc/config/firewall
@@ -33,6 +35,34 @@ policy() { sh /tmp/policy.sh "$@"; }
 reject() { if "$@"; then echo "Unexpected success: $*" >&2; exit 1; fi; }
 policy apply; policy check
 nft list ruleset >/tmp/original
+# Domains affect only the helper and must not change policy across a reload.
+test_domains() (
+	set +u  # OpenWrt's config helpers assume unset UCI internals are empty.
+	. /lib/functions.sh
+	. /tmp/domains.sh
+	config_load /etc/config/switch2-block || exit 1
+	switch2_test_domains
+)
+[ "$(test_domains)" = ctest.p01.ctest.srv.nintendo.net ]
+uci set switch2-block.global.test_domain=Legacy.Example
+uci commit switch2-block
+[ "$(test_domains)" = Legacy.Example ]
+uci delete switch2-block.global.test_domain
+uci add_list switch2-block.global.test_domain=first.example
+uci add_list switch2-block.global.test_domain=second.example
+uci commit switch2-block
+[ "$(test_domains)" = "$(printf 'first.example\nsecond.example')" ]
+policy apply; policy check
+nft list ruleset >/tmp/after; cmp /tmp/original /tmp/after
+uci add_list switch2-block.global.test_domain=First.Example
+uci commit switch2-block
+reject test_domains
+uci del_list switch2-block.global.test_domain=First.Example
+uci add_list 'switch2-block.global.test_domain=/example/198.18.0.10'
+uci commit switch2-block
+reject test_domains
+uci del_list 'switch2-block.global.test_domain=/example/198.18.0.10'
+uci commit switch2-block
 uci set switch2-block.dock.mac=11:22:33:44:55:66; uci commit switch2-block
 reject policy apply
 nft list ruleset >/tmp/after; cmp /tmp/original /tmp/after
@@ -47,5 +77,5 @@ nft flush ruleset
 uci set firewall.@defaults[0].flow_offloading=1; uci commit firewall
 reject policy restore
 nft list ruleset >/tmp/after; cmp /tmp/original /tmp/after
-echo 'PASS: failed reconfiguration, partial policy, and cold restore'
+echo 'PASS: domain validation, unchanged policy, failed reconfiguration, partial policy, and cold restore'
 TEST

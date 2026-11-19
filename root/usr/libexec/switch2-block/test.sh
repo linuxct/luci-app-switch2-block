@@ -3,23 +3,15 @@
 # No caller-supplied host, URL or command: this probe contacts the local helper only.
 [ "$#" -eq 0 ] || exit 1
 export LC_ALL=C
+. /lib/functions.sh
+. /usr/libexec/switch2-block/domains.sh
 umask 077
 work=$(mktemp -d /tmp/switch2-test.XXXXXX) || exit 1
 trap 'rm -rf "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 
-helper_check() {
-	# Read a snapshot under a private package name, never a staged UCI delta.
-	local pkg="probe_${work##*.}" ip domain code listeners bad=0
-	cp /etc/config/switch2-block "$work/$pkg" || return 1
-	ip=$(uci -q -c "$work" get "$pkg.global.spoof_ip") || return 1
-	domain=$(uci -q -c "$work" get "$pkg.global.test_domain") || domain=ctest.p01.ctest.srv.nintendo.net
-	case "$domain" in ''|-*|*[!a-zA-Z0-9.-]*) echo "Invalid connection test domain."; return 1;; esac
-	if ! ip -4 addr show dev br-lan | awk -v ip="$ip" '$1 == "inet" {split($2, a, "/"); if (a[1] == ip) found=1} END {exit !found}'; then
-		echo "Configured helper IPv4 address is not assigned to br-lan."
-		return 1
-	fi
-
+probe_domain() {
+	local domain="$1" ip="$2" code bad=0
 	echo "DNS: $domain at $ip"
 	if ! nslookup -type=A "$domain" "$ip" >"$work/dns" 2>&1 ||
 	   ! awk -v ip="$ip" '
@@ -36,7 +28,7 @@ helper_check() {
 	cat "$work/dns"
 
 	echo "HTTP: $ip:80 (Host: $domain)"
-	if code=$(curl --silent --show-error --noproxy '*' --connect-timeout 3 --max-time 5 \
+	if code=$(curl -q --silent --show-error --noproxy '*' --connect-timeout 3 --max-time 5 \
 		--max-filesize 4096 -H "Host: $domain" -o "$work/body" -w '%{http_code}' "http://$ip/") &&
 	   [ "$code" = 200 ] && [ "$(wc -c < "$work/body")" -eq 2 ] && [ "$(cat "$work/body")" = ok ]; then
 		echo "HTTP 200 with the exact two-byte body: ok"
@@ -44,6 +36,28 @@ helper_check() {
 		echo "Unexpected HTTP status ($code) or body; expected HTTP 200 and two bytes: ok"
 		bad=1
 	fi
+	return "$bad"
+}
+
+helper_check() {
+	# Use a unique UCI package name so no staged delta can shadow the snapshot.
+	local pkg="probe_${work##*.}" ip domains domain listeners bad=0
+	cp /etc/config/switch2-block "$work/$pkg" || return 1
+	UCI_CONFIG_DIR="$work" LOAD_STATE= config_load "$pkg" || {
+		echo "Cannot read the committed Switch configuration."
+		return 1
+	}
+	config_get ip global spoof_ip
+	domains=$(switch2_test_domains) || { echo "Invalid Nintendo test domain list."; return 1; }
+	if ! ip -4 addr show dev br-lan | awk -v ip="$ip" '$1 == "inet" {split($2, a, "/"); if (a[1] == ip) found=1} END {exit !found}'; then
+		echo "Configured helper IPv4 address is not assigned to br-lan."
+		return 1
+	fi
+	while IFS= read -r domain; do
+		probe_domain "$domain" "$ip" || bad=1
+	done <<EOF
+$domains
+EOF
 
 	echo "Helper DNS and HTTP listeners:"
 	listeners=$(netstat -lntup) || return 1
