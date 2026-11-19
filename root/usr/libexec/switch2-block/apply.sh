@@ -7,13 +7,10 @@ CGI_DIR="/www_nintendo/cgi-bin"
 CGI_FILE="$CGI_DIR/ctest"
 FW_USER="/etc/firewall.user"
 NFT_D_FILE="/etc/nftables.d/99-switch2-block.nft"
+POLICY="/usr/libexec/switch2-block/policy.sh"
 
 log_msg() {
 	logger -t "switch2-block" "$1"
-}
-
-is_fw4() {
-	[ -x /sbin/fw4 ] || command -v fw4 >/dev/null 2>&1 || command -v nft >/dev/null 2>&1
 }
 
 # 动态探测当前路由器真实 LAN IP（消除任何硬编码 IP）
@@ -24,20 +21,6 @@ detect_lan_ip() {
 		ip=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet / {print $2}' | cut -d'/' -f1 | head -n1)
 	fi
 	echo "$ip"
-}
-
-# 根据主 LAN IP 动态推导同网段伪装辅助 IP（若主 IP 已为 .254 则避让为 .253）
-derive_spoof_ip() {
-	local lan_ip="$1"
-	[ -z "$lan_ip" ] && return
-	local prefix last_octet
-	prefix=$(echo "$lan_ip" | awk -F'.' '{print $1"."$2"."$3}')
-	last_octet=$(echo "$lan_ip" | awk -F'.' '{print $4}')
-	if [ "$last_octet" = "254" ]; then
-		echo "${prefix}.253"
-	else
-		echo "${prefix}.254"
-	fi
 }
 
 # 幂等辅助函数：仅当值不同时才写入 UCI
@@ -88,7 +71,7 @@ cleanup_network() {
 		uci -q delete network.nintendo
 		uci commit network
 	fi
-	if [ "$(uci -q get firewall._switch2_zone_managed)" = "1" ]; then
+	if [ "$(uci -q get network.lan._switch2_zone_managed)" = "1" ]; then
 		local i=0
 		while uci -q get firewall.@zone[$i] >/dev/null; do
 			if [ "$(uci -q get firewall.@zone[$i].name)" = "lan" ]; then
@@ -96,7 +79,8 @@ cleanup_network() {
 			fi
 			i=$((i + 1))
 		done
-		uci -q delete firewall._switch2_zone_managed
+		uci -q delete network.lan._switch2_zone_managed
+		uci commit network
 		uci commit firewall
 	fi
 }
@@ -166,47 +150,23 @@ cleanup_uhttpd() {
 	rm -rf /www_nintendo
 }
 
-cleanup_firewall() {
-	if [ -f "$FW_USER" ]; then
-		if grep -q "^# BEGIN SWITCH2-BLOCK$" "$FW_USER" && grep -q "^# END SWITCH2-BLOCK$" "$FW_USER"; then
-			sed -i '/^# BEGIN SWITCH2-BLOCK$/,/^# END SWITCH2-BLOCK$/d' "$FW_USER"
-		fi
-		sed -i '/Block_Switch2_IPv6_Input/d' "$FW_USER"
-		sed -i '/Block_Switch2_All_Forward/d' "$FW_USER"
+# Upgrade only: retire the old includes after the independent guard is live.
+retire_legacy_rules() {
+	local changed=0
+	if [ -f "$NFT_D_FILE" ]; then
+		rm -f "$NFT_D_FILE" || return 1
+		changed=1
 	fi
-
+	if [ -f "$FW_USER" ] && grep -qx '# BEGIN SWITCH2-BLOCK' "$FW_USER"; then
+		grep -qx '# END SWITCH2-BLOCK' "$FW_USER" || return 1
+		sed -i '/^# BEGIN SWITCH2-BLOCK$/,/^# END SWITCH2-BLOCK$/d' "$FW_USER" || return 1
+		changed=1
+	fi
 	if uci -q get firewall.switch2_fw_user >/dev/null; then
-		uci -q delete firewall.switch2_fw_user
-		uci commit firewall
+		uci delete firewall.switch2_fw_user && uci commit firewall || return 1
+		changed=1
 	fi
-
-	rm -f "$NFT_D_FILE"
-
-	if is_fw4; then
-		for chain in input forward; do
-			local handles
-			handles=$(nft -a list chain inet fw4 $chain 2>/dev/null | grep -E "Block_Switch2_(IPv6_Input|All_Forward)" | awk '{print $NF}')
-			for h in $handles; do
-				nft delete rule inet fw4 $chain handle "$h" 2>/dev/null
-			done
-		done
-		nft delete chain inet fw4 switch2_block_input 2>/dev/null
-		nft delete chain inet fw4 switch2_block_forward 2>/dev/null
-	else
-		if command -v ip6tables >/dev/null 2>&1; then
-			ip6tables -S INPUT 2>/dev/null | grep "Block_Switch2_IPv6_Input" | sed 's/^-A /-D /' | while read -r rule; do
-				ip6tables $rule 2>/dev/null
-			done
-			ip6tables -S FORWARD 2>/dev/null | grep "Block_Switch2_All_Forward" | sed 's/^-A /-D /' | while read -r rule; do
-				ip6tables $rule 2>/dev/null
-			done
-		fi
-		if command -v iptables >/dev/null 2>&1; then
-			iptables -S FORWARD 2>/dev/null | grep "Block_Switch2_All_Forward" | sed 's/^-A /-D /' | while read -r rule; do
-				iptables $rule 2>/dev/null
-			done
-		fi
-	fi
+	[ "$changed" = 0 ] || /etc/init.d/firewall restart
 }
 
 apply_network() {
@@ -225,11 +185,13 @@ apply_network() {
 	local i=0
 	while uci -q get firewall.@zone[$i] >/dev/null; do
 		if [ "$(uci -q get firewall.@zone[$i].name)" = "lan" ]; then
-			uci_add_list_unique firewall "@zone[$i]" network 'nintendo'
+			if uci_add_list_unique firewall "@zone[$i]" network 'nintendo'; then
+				uci set network.lan._switch2_zone_managed='1'
+				uci commit network
+			fi
 		fi
 		i=$((i + 1))
 	done
-	uci_set_if_diff firewall _switch2_zone_managed '1'
 	uci commit firewall
 }
 
@@ -237,7 +199,6 @@ apply_dhcp() {
 	local lan_ip="$1"
 	local spoof_ip="$2"
 	local domain="$3"
-	local force_dhcp="$4"
 
 	if ! uci -q get dhcp.main_dns >/dev/null; then
 		if uci -q get dhcp.@dnsmasq[0] >/dev/null; then
@@ -276,22 +237,16 @@ apply_dhcp() {
 		uci set dhcp.lan._switch2_managed='1'
 	fi
 
-	if [ "$force_dhcp" = "1" ]; then
-		if [ "$(uci -q get dhcp.lan.force)" != "1" ]; then
-			uci set dhcp.lan.force='1'
-			uci set dhcp.lan._switch2_force_managed='1'
-		fi
-	else
-		if [ "$(uci -q get dhcp.lan._switch2_force_managed)" = "1" ]; then
-			uci -q delete dhcp.lan.force
-			uci -q delete dhcp.lan._switch2_force_managed
-		fi
+	if [ "$(uci -q get dhcp.lan._switch2_force_managed)" = "1" ]; then
+		uci -q delete dhcp.lan.force
+		uci -q delete dhcp.lan._switch2_force_managed
 	fi
 
 	if [ "$(uci -q get dhcp.nintendo_dns)" != "dnsmasq" ]; then
 		uci set dhcp.nintendo_dns='dnsmasq'
 	fi
-	uci_add_list_unique dhcp nintendo_dns notinterface 'lan'
+	uci -q del_list dhcp.nintendo_dns.notinterface='lan'
+	uci_set_if_diff dhcp nintendo_dns confdir '/tmp/dnsmasq-switch2.d'
 	if [ "$(uci -q get dhcp.nintendo_dns.listen_address)" != "$spoof_ip" ]; then
 		uci -q delete dhcp.nintendo_dns.listen_address
 		uci add_list dhcp.nintendo_dns.listen_address="$spoof_ip"
@@ -306,7 +261,7 @@ apply_dhcp() {
 		uci -q delete dhcp.nintendo_dns.address
 		uci add_list dhcp.nintendo_dns.address="/${domain}/${spoof_ip}"
 	fi
-	uci_add_list_unique dhcp nintendo_dns server '//'
+	uci_set_if_diff dhcp nintendo_dns server '/#/'
 	uci_set_if_diff dhcp nintendo_dns leasefile '/tmp/dhcp.leases.nintendo'
 
 	if [ "$(uci -q get dhcp.switch2)" != "tag" ]; then
@@ -325,8 +280,7 @@ apply_dhcp() {
 
 	add_host_entry() {
 		local cfg="$1"
-		local name mac ip
-		config_get name "$cfg" name "Switch2"
+		local mac ip
 		config_get mac "$cfg" mac ""
 		config_get ip "$cfg" ip ""
 		mac=$(echo "$mac" | tr 'a-f' 'A-F' | tr -d ' ')
@@ -336,8 +290,10 @@ apply_dhcp() {
 		[ -n "$existing_idx" ] && uci -q delete dhcp.@host[$existing_idx]
 		local hsec
 		hsec=$(uci add dhcp host)
-		uci set dhcp.$hsec.name="$name"
-		uci set dhcp.$hsec.dns='1'
+		# OpenWrt skips dynamic hosts without a hostname. A LuCI display
+		# label may contain spaces; never pass it to dnsmasq as a hostname.
+		uci set dhcp.$hsec.name="switch2-$(printf '%s' "$mac" | tr -d ':')"
+		uci set dhcp.$hsec.instance='main_dns'
 		uci set dhcp.$hsec.mac="$mac"
 		[ -n "$ip" ] && uci set dhcp.$hsec.ip="$ip"
 		uci set dhcp.$hsec.tag='switch2'
@@ -389,204 +345,68 @@ apply_uhttpd() {
 	uci commit uhttpd
 }
 
-ensure_fw_user_include() {
-	local is_fw4_flag="$1"
-	local has_user_inc=0
-	local i=0
-	while uci -q get firewall.@include[$i] >/dev/null; do
-		if [ "$(uci -q get firewall.@include[$i].path)" = "$FW_USER" ]; then
-			has_user_inc=1
-			uci_set_if_diff firewall "@include[$i]" enabled '1'
-			[ "$is_fw4_flag" = "1" ] && uci_set_if_diff firewall "@include[$i]" fw4_compatible '1'
-			break
-		fi
-		i=$((i + 1))
-	done
-	if [ "$has_user_inc" -eq 0 ]; then
-		uci set firewall.switch2_fw_user='include'
-		uci set firewall.switch2_fw_user.type='script'
-		uci set firewall.switch2_fw_user.path="$FW_USER"
-		[ "$is_fw4_flag" = "1" ] && uci set firewall.switch2_fw_user.fw4_compatible='1'
-		uci set firewall.switch2_fw_user.enabled='1'
-	fi
-	uci commit firewall
-}
-
-apply_firewall() {
-	local fw_mode="$1"
-	cleanup_firewall
-
-	TMP_MACS="/tmp/switch2-block.macs"
-	: > "$TMP_MACS"
-
-	collect_macs() {
-		local cfg="$1"
-		local mac block_wan
-		config_get mac "$cfg" mac ""
-		config_get block_wan "$cfg" block_wan "1"
-		mac=$(echo "$mac" | tr 'a-f' 'A-F' | tr -d ' ')
-		[ -z "$mac" ] && return
-		[ "$block_wan" != "1" ] && return
-		grep -qi "^${mac}$" "$TMP_MACS" || echo "$mac" >> "$TMP_MACS"
-	}
-	config_foreach collect_macs device
-
-	if [ ! -s "$TMP_MACS" ]; then
-		rm -f "$TMP_MACS"
-		return 0
-	fi
-
-	if is_fw4; then
-		if [ "$fw_mode" = "nftables_d" ]; then
-			log_msg "Using fw4 + native /etc/nftables.d/ mode"
-			mkdir -p /etc/nftables.d
-			{
-				echo "chain switch2_block_input {"
-				echo "	type filter hook input priority filter - 5; policy accept;"
-				while read -r mac; do
-					echo "	ether saddr $mac ip6 nexthdr icmpv6 counter drop comment \"Block_Switch2_IPv6_Input\""
-				done < "$TMP_MACS"
-				echo "}"
-				echo ""
-				echo "chain switch2_block_forward {"
-				echo "	type filter hook forward priority filter - 5; policy accept;"
-				while read -r mac; do
-					echo "	ether saddr $mac counter drop comment \"Block_Switch2_All_Forward\""
-				done < "$TMP_MACS"
-				echo "}"
-			} > "$NFT_D_FILE"
-		else
-			log_msg "Using fw4 + /etc/firewall.user mode"
-			ensure_fw_user_include "1"
-			[ ! -f "$FW_USER" ] && touch "$FW_USER"
-			{
-				echo "# BEGIN SWITCH2-BLOCK"
-				while read -r mac; do
-					if ! grep -q "ether saddr $mac ip6 nexthdr icmpv6" "$FW_USER"; then
-						echo "nft insert rule inet fw4 input ether saddr $mac ip6 nexthdr icmpv6 counter drop comment \"Block_Switch2_IPv6_Input\""
-					fi
-					if ! grep -q "ether saddr $mac counter drop" "$FW_USER"; then
-						echo "nft insert rule inet fw4 forward ether saddr $mac counter drop comment \"Block_Switch2_All_Forward\""
-					fi
-				done < "$TMP_MACS"
-				echo "# END SWITCH2-BLOCK"
-			} >> "$FW_USER"
-		fi
-	else
-		log_msg "Using fw3 (iptables/ip6tables) + /etc/firewall.user mode"
-		ensure_fw_user_include "0"
-		[ ! -f "$FW_USER" ] && touch "$FW_USER"
-		{
-			echo "# BEGIN SWITCH2-BLOCK"
-			while read -r mac; do
-				if ! grep -q -- "--mac-source $mac -p ipv6-icmp" "$FW_USER"; then
-					echo "command -v ip6tables >/dev/null 2>&1 && ip6tables -I INPUT -m mac --mac-source $mac -p ipv6-icmp -m comment --comment \"Block_Switch2_IPv6_Input\" -j DROP"
-				fi
-				if ! grep -q -- "--mac-source $mac -m comment --comment \"Block_Switch2_All_Forward\"" "$FW_USER"; then
-					echo "command -v ip6tables >/dev/null 2>&1 && ip6tables -I FORWARD -m mac --mac-source $mac -m comment --comment \"Block_Switch2_All_Forward\" -j DROP"
-					echo "command -v iptables >/dev/null 2>&1 && iptables -I FORWARD -m mac --mac-source $mac -m comment --comment \"Block_Switch2_All_Forward\" -j DROP"
-				fi
-			done < "$TMP_MACS"
-			echo "# END SWITCH2-BLOCK"
-		} >> "$FW_USER"
-	fi
-	rm -f "$TMP_MACS"
-}
-
-reload_proxy_fw() {
-	[ -x /usr/share/shadowsocksr/firewall.include ] && /usr/share/shadowsocksr/firewall.include >/dev/null 2>&1
-	[ -x /usr/share/passwall/firewall.include ] && /usr/share/passwall/firewall.include >/dev/null 2>&1
-	[ -x /usr/share/passwall2/firewall.include ] && /usr/share/passwall2/firewall.include >/dev/null 2>&1
-}
-
 start_service() {
-	config_load "$CONF"
-	local enabled lan_ip spoof_ip test_domain force_dhcp fw_mode
-	config_get_bool enabled global enabled 0
-	config_get_bool force_dhcp global force_dhcp 0
-	config_get fw_mode global fw_mode "firewall_user"
+	local enabled lan_ip spoof_ip test_domain
+	enabled=$(uci -q get "/etc/config/$CONF.global.enabled") || return 1
+	case "$enabled" in
+		0) disable_service; return $? ;;
+		1) ;;
+		*) log_msg "Invalid enable flag; retaining isolation"; return 1 ;;
+	esac
+	config_load "/etc/config/$CONF" || return 1
 	config_get lan_ip global lan_ip ""
 	config_get spoof_ip global spoof_ip ""
 	config_get test_domain global test_domain "ctest.p01.ctest.srv.nintendo.net"
-
-	if [ "$enabled" -eq 0 ]; then
-		stop_service
-		return 0
-	fi
-
-	# 若未配置 IP，自动动态探测并回写 UCI，绝不使用硬编码 IP
-	if [ -z "$lan_ip" ]; then
-		lan_ip=$(detect_lan_ip)
-		[ -n "$lan_ip" ] && uci_set_if_diff "$CONF" global lan_ip "$lan_ip"
-	fi
-	if [ -z "$spoof_ip" ] && [ -n "$lan_ip" ]; then
-		spoof_ip=$(derive_spoof_ip "$lan_ip")
-		[ -n "$spoof_ip" ] && uci_set_if_diff "$CONF" global spoof_ip "$spoof_ip"
-	fi
-	uci commit "$CONF"
 
 	if [ -z "$lan_ip" ] || [ -z "$spoof_ip" ] || [ "$lan_ip" = "$spoof_ip" ]; then
 		log_msg "Error: Invalid or undetected LAN/Spoof IP (LAN: '$lan_ip', Spoof: '$spoof_ip'), aborting."
 		return 1
 	fi
 
-	log_msg "Applying Switch 2 spoof & block (LAN: $lan_ip, Spoof: $spoof_ip, ForceDHCP: $force_dhcp, FWMode: $fw_mode)"
-	apply_network "$spoof_ip"
-	apply_dhcp "$lan_ip" "$spoof_ip" "$test_domain" "$force_dhcp"
-	apply_uhttpd "$lan_ip" "$spoof_ip"
-	apply_firewall "$fw_mode"
-
-	ifup nintendo >/dev/null 2>&1
-	sleep 1
-	/etc/init.d/dnsmasq restart
-	/etc/init.d/uhttpd restart
-	/etc/init.d/firewall restart
-	reload_proxy_fw
+	# Install and verify isolation before changing *any* network listeners.
+	"$POLICY" apply || { log_msg "Isolation apply failed; do not connect the console"; return 1; }
+	/etc/init.d/switch2-guard enabled || /etc/init.d/switch2-guard enable || return 1
+	retire_legacy_rules || return 1
+	apply_network "$spoof_ip" && apply_dhcp "$lan_ip" "$spoof_ip" "$test_domain" &&
+		apply_uhttpd "$lan_ip" "$spoof_ip" && ifup nintendo &&
+		/etc/init.d/dnsmasq restart && /etc/init.d/uhttpd restart || {
+		log_msg "Helper setup failed; isolation remains installed"
+		return 1
+	}
 }
 
-stop_service() {
-	config_load "$CONF"
+disable_service() {
+	config_load "/etc/config/$CONF" || return 1
 	local lan_ip
 	config_get lan_ip global lan_ip ""
 	[ -z "$lan_ip" ] && lan_ip=$(detect_lan_ip)
 
-	log_msg "Disabling Switch 2 spoof & restoring default OpenWrt services"
-	cleanup_firewall
-	cleanup_uhttpd
-	cleanup_dhcp "$lan_ip"
-	ifdown nintendo >/dev/null 2>&1
-	cleanup_network
-	
-	/etc/init.d/dnsmasq restart
-	/etc/init.d/uhttpd restart
-	/etc/init.d/firewall restart
-	reload_proxy_fw
-}
-
-reload_nft_only() {
-	config_load "$CONF"
-	local enabled fw_mode
-	config_get_bool enabled global enabled 0
-	config_get fw_mode global fw_mode "firewall_user"
-	if [ "$enabled" -eq 1 ]; then
-		apply_firewall "$fw_mode"
-		/etc/init.d/firewall restart
-		reload_proxy_fw
+	retire_legacy_rules || return 1
+	if uci -q get network.nintendo >/dev/null || uci -q get dhcp.nintendo_dns >/dev/null ||
+			uci -q get uhttpd.nintendo_ctest >/dev/null; then
+		log_msg "Removing Switch helpers after explicit disable"
+		cleanup_uhttpd
+		cleanup_dhcp "$lan_ip"
+		ifdown nintendo >/dev/null 2>&1
+		cleanup_network
+		/etc/init.d/dnsmasq restart && /etc/init.d/uhttpd restart || return 1
 	fi
+	[ "$1" = uninstall ] || [ "$(uci -q get "/etc/config/$CONF.global.enabled")" = 0 ] || return 1
+	"$POLICY" remove
 }
 
+# Serialize helper setup/teardown too, not just each kernel transaction.
+exec 9>/var/lock/switch2-helpers.lock || exit 1
+flock -x 9 || exit 1
 case "$1" in
-	start|restart)
+	start)
 		start_service
 		;;
-	stop)
-		stop_service
-		;;
-	nft_only)
-		reload_nft_only
+	uninstall)
+		disable_service uninstall
 		;;
 	*)
-		echo "Usage: $0 {start|stop|restart|nft_only}"
+		echo "Usage: $0 {start|uninstall}" >&2
 		exit 1
 		;;
 esac

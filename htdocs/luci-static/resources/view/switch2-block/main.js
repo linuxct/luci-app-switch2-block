@@ -4,24 +4,58 @@
 'require uci';
 'require fs';
 'require ui';
+'require rpc';
+
+var config = 'switch2-block';
+var getLanAddresses = rpc.declare({
+	object: 'network.interface.lan', method: 'status', expect: { 'ipv4-address': [] }
+});
+var getPending = rpc.declare({ object: 'uci', method: 'changes', reject: true });
+
+function validLocalIP(value) {
+	if (typeof value !== 'string' || !/^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}$/.test(value))
+		return false;
+	var octets = value.split('.').map(Number);
+	return octets[0] > 0 && octets[0] !== 127 && octets[0] < 224 &&
+		octets.every(function(octet) { return octet <= 255; });
+}
+
+// Called after LuCI has parsed every row, but before it saves anything to rpcd.
+function validateEnrollment() {
+	if (uci.get(config, 'global', 'enabled') !== '1')
+		return;
+
+	var devices = uci.sections(config, 'device'), seen = new Set();
+	if (!devices.length)
+		throw new Error(_('Enroll at least one real adapter MAC address before enabling isolation.'));
+
+	if (!validLocalIP(uci.get(config, 'global', 'lan_ip')) || !validLocalIP(uci.get(config, 'global', 'spoof_ip')))
+		throw new Error(_('Enter a valid unicast IPv4 address for both the router LAN and the local helper.'));
+
+	devices.forEach(function(dev) {
+		var mac = String(dev.mac || '').toUpperCase();
+		// The old 11:22:33:44:55:66 example is multicast, not an adapter address.
+		if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac) ||
+		    (parseInt(mac.slice(0, 2), 16) & 1) || mac === '00:00:00:00:00:00' || mac === '00:11:22:33:44:55')
+			throw new Error(_('Enter a real, nonzero unicast MAC address for every adapter.'));
+		if (seen.has(mac))
+			throw new Error(_('Duplicate adapter MAC address: %s').format(mac));
+		seen.add(mac);
+		if (dev.block_wan != null && dev.block_wan !== '1')
+			throw new Error(_('Enroll every listed adapter for blocking or remove its row.'));
+	});
+}
 
 return view.extend({
 	load: function() {
 		return Promise.all([
-			uci.load('switch2-block'),
-			uci.load('network').catch(function() { return null; }),
-			fs.stat('/usr/sbin/nft').then(function() { return true; }).catch(function() {
-				return fs.stat('/sbin/fw4').then(function() { return true; }).catch(function() { return false; });
-			})
+			uci.load(config),
+			L.resolveDefault(getLanAddresses(), [])
 		]);
 	},
 
-	detectNetworkDefaults: function() {
-		var rawIp = uci.get('network', 'lan', 'ipaddr') || '';
-		if (Array.isArray(rawIp)) {
-			rawIp = rawIp[0] || '';
-		}
-		var detectedLanIp = String(rawIp).trim().split(/\s+/)[0].split('/')[0];
+	detectNetworkDefaults: function(addresses) {
+		var detectedLanIp = addresses.length && validLocalIP(addresses[0].address) ? addresses[0].address : '';
 		var detectedSpoofIp = '';
 		var prefix = '';
 
@@ -38,216 +72,53 @@ return view.extend({
 		};
 	},
 
-	handleTestSpoof: function(m, enableOpt, forceDhcpOpt, lanOpt, spoofOpt, domainOpt, fwModeOpt, isFw4, netDefaults) {
-		var savedEnabled = uci.get('switch2-block', 'global', 'enabled') || '0';
-		var savedForceDhcp = uci.get('switch2-block', 'global', 'force_dhcp') || '0';
-		var savedLanIp = uci.get('switch2-block', 'global', 'lan_ip') || netDefaults.lanIp || '';
-		var savedSpoofIp = uci.get('switch2-block', 'global', 'spoof_ip') || netDefaults.spoofIp || '';
-		var savedDomain = uci.get('switch2-block', 'global', 'test_domain') || 'ctest.p01.ctest.srv.nintendo.net';
-		var savedFwMode = uci.get('switch2-block', 'global', 'fw_mode') || 'firewall_user';
+	handleSave: function() {
+		return this.map.save(validateEnrollment);
+	},
 
-		var curEnabled = enableOpt ? enableOpt.formvalue('global') : savedEnabled;
-		var curForceDhcp = forceDhcpOpt ? forceDhcpOpt.formvalue('global') : savedForceDhcp;
-		var curLanIp = lanOpt ? (lanOpt.formvalue('global') || savedLanIp) : savedLanIp;
-		var curSpoofIp = spoofOpt ? (spoofOpt.formvalue('global') || savedSpoofIp) : savedSpoofIp;
-		var curDomain = domainOpt ? (domainOpt.formvalue('global') || savedDomain) : savedDomain;
-		var curFwMode = fwModeOpt ? (fwModeOpt.formvalue('global') || savedFwMode) : savedFwMode;
-
-		if (curEnabled !== '1') {
-			ui.addNotification(null, E('p', _('Spoofing and update blocking are off. Enable them, then click Save & Apply.')), 'warning');
-			return;
-		}
-
-		var pendingChanges = uci.changes();
-		var hasPendingUci = pendingChanges && pendingChanges['switch2-block'] && pendingChanges['switch2-block'].length > 0;
-
-		if (hasPendingUci ||
-			curEnabled !== savedEnabled ||
-			curForceDhcp !== savedForceDhcp ||
-			curLanIp !== savedLanIp ||
-			curSpoofIp !== savedSpoofIp ||
-			curDomain !== savedDomain ||
-			curFwMode !== savedFwMode) {
-			ui.addNotification(null, E('p', _('This page or the device list has unsaved changes. Click Save & Apply before running the self-test.')), 'warning');
-			return;
-		}
-
-		if (!curSpoofIp) {
-			ui.addNotification(null, E('p', _('Enter a Switch Helper IP, then click Save & Apply.')), 'error');
-			return;
-		}
-
-		var devices = uci.sections('switch2-block', 'device') || [];
-		var hasBlockDevice = devices.some(function(dev) {
-			return dev.mac && (dev.block_wan === '1' || dev.block_wan === undefined);
-		});
-
+	runTest: function(checkDisplayed) {
 		ui.showModal(_('Running the Self-Test...'), [
-			E('p', { 'class': 'spinning' }, _('Checking the DNS redirect, the 2-byte uHTTPd response, port 80, and the firewall rules.'))
+			E('p', { 'class': 'spinning' }, _('Checking the router-local helper and active isolation policy.'))
 		]);
-
-		var targetFwFile = (isFw4 && curFwMode === 'nftables_d')
-			? '/etc/nftables.d/99-switch2-block.nft'
-			: '/etc/firewall.user';
-
-		var checkFwRule = fs.read(targetFwFile).then(function(content) {
-			return (content || '').indexOf('Block_Switch2_') !== -1;
-		}).catch(function() {
-			return false;
-		});
-
-		return Promise.all([
-			fs.exec('/usr/libexec/switch2-block/test.sh', [curSpoofIp, curDomain]),
-			checkFwRule
-		]).then(function(results) {
-			var res = results[0];
-			var fwRuleInFile = results[1];
-			var rawOut = (res.stdout || '') + (res.stderr || '');
-			var dnsOut = '', httpHeader = '', bodyLen = '0', body = '', portOwner = '', fwActiveRules = '';
-
-			var mDns = rawOut.match(/=== DNS_RESULT ===\n([\s\S]*?)\n=== HTTP_HEADER ===/);
-			var mHdr = rawOut.match(/=== HTTP_HEADER ===\n([\s\S]*?)\n=== HTTP_BODY_LEN ===/);
-			var mLen = rawOut.match(/=== HTTP_BODY_LEN ===\n([\s\S]*?)\n=== HTTP_BODY ===/);
-			var mBody = rawOut.match(/=== HTTP_BODY ===\n([\s\S]*?)\n=== HTTP_PORT_OWNER ===/);
-			var mPort = rawOut.match(/=== HTTP_PORT_OWNER ===\n([\s\S]*?)\n=== FW_ACTIVE_RULES ===/);
-			var mFw = rawOut.match(/=== FW_ACTIVE_RULES ===\n([\s\S]*)$/);
-
-			if (mDns && mDns[1]) dnsOut = mDns[1].trim();
-			if (mHdr && mHdr[1]) httpHeader = mHdr[1].trim();
-			if (mLen && mLen[1]) bodyLen = mLen[1].trim();
-			if (mBody && mBody[1]) body = mBody[1];
-			if (mPort && mPort[1]) portOwner = mPort[1].trim();
-			if (mFw && mFw[1]) fwActiveRules = mFw[1].trim();
-
-			var fwRuleLines = fwActiveRules ? fwActiveRules.split('\n').filter(function(line) { return line.trim() !== ''; }) : [];
-			var fwActiveCount = fwRuleLines.length;
-
-			// 1. 剥离前两行的 Server/Address 头部，仅检测 Name: 之后的实际解析应答部分
-			var answerPart = dnsOut.split(/Name:/i).slice(1).join('Name:');
-			var dnsOk = answerPart.indexOf(curSpoofIp) !== -1;
-
-			// 2. HTTP 响应校验
-			var httpOk = httpHeader.indexOf('200 OK') !== -1 && body === 'ok' && bodyLen === '2';
-
-			// 3. 独立解析 80 端口监听归属状态
-			var portStatusColor, portStatusText;
-			if (!portOwner) {
-				portStatusColor = '#d9534f';
-				portStatusText = _('Nothing is listening on %s:80. The uHTTPd helper is not running.').format(curSpoofIp);
-			} else if (portOwner.indexOf('uhttpd') !== -1 && portOwner.indexOf('nginx') === -1) {
-				portStatusColor = 'green';
-				portStatusText = _('Only uHTTPd is listening on %s:80.').format(curSpoofIp);
-			} else {
-				var procMatch = portOwner.match(/\(\("([^"]+)"/);
-				var procName = procMatch ? procMatch[1] : _('Other web service');
-				portStatusColor = '#d9534f';
-				portStatusText = _('"%s" uses port 80 on all addresses. Set it to listen only on the Router LAN IP (%s:80).').format(procName, curLanIp);
-			}
-
-			// 4. 防火墙阻断规则状态
-			var fwStatusColor, fwStatusText;
-			if (!hasBlockDevice) {
-				fwStatusColor = 'green';
-				fwStatusText = _('Skipped. No device has internet blocking enabled.');
-			} else if (fwRuleInFile && fwActiveCount > 0) {
-				fwStatusColor = 'green';
-				fwStatusText = _('Saved to %s. Active rules in the firewall: %d.').format(targetFwFile, fwActiveCount);
-			} else if (fwRuleInFile && fwActiveCount === 0) {
-				fwStatusColor = '#d9534f';
-				fwStatusText = _('Rules are in %s, but the firewall did not load them. Change the firewall rule mode, then click Save & Apply.').format(targetFwFile);
-			} else {
-				fwStatusColor = '#f0ad4e';
-				fwStatusText = _('No blocking rules in %s. Make sure that you clicked Save & Apply.').format(targetFwFile);
-			}
-
-			var preBaseStyle = 'background:#f5f5f5; padding:8px 10px; border:1px solid #e3e3e3; border-radius:4px; font-family:monospace; font-size:12px; line-height:1.45; white-space:pre; overflow-x:auto; overflow-y:auto; margin-bottom:10px;';
-
-			var modalNode = ui.showModal(_('Self-Test Results'), [
-				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('1. DNS redirect:') + ' '),
-					E('span', { 'style': 'color:' + (dnsOk ? 'green' : 'red') + '; font-weight:bold;' },
-						dnsOk ? _('Resolved to %s.').format(curSpoofIp) : _('DNS did not return the Switch Helper IP. Check for a global DNS redirect or a proxy intercepting requests.'))
-				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:110px;' }, dnsOut || _('No output')),
-
-				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('2. HTTP response:') + ' '),
-					E('span', { 'style': 'color:' + (httpOk ? 'green' : 'red') + '; font-weight:bold;' },
-						httpOk ? _('Returned 200 OK with the 2-byte body "ok".') : _('Unexpected HTTP status or body length. Bytes: %s.').format(bodyLen))
-				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:165px;' },
-					(httpHeader ? httpHeader + '\n\n' + _('[Body: "%s" | Bytes: %s]').format(body, bodyLen) : rawOut || _('No output'))),
-
-				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('3. Port 80:') + ' '),
-					E('span', { 'style': 'color:' + portStatusColor + '; font-weight:bold;' }, portStatusText)
-				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:80px;' },
-					portOwner || _('No listeners on port 80.')),
-
-				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('4. Firewall rules:') + ' '),
-					E('span', { 'style': 'color:' + fwStatusColor + '; font-weight:bold;' }, fwStatusText)
-				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:140px;' },
-					fwActiveRules || _('No active Switch 2 blocking rules in the firewall.')),
-
-				E('div', { 'class': 'right', 'style': 'margin-top: 12px;' }, [
-					E('button', {
-						'class': 'btn cbi-button-neutral',
-						'click': ui.hideModal
-					}, _('Close'))
-				])
-			]);
-
-			// 动态拓宽 LuCI 模态弹窗容器，防止长文本折行
-			if (modalNode) {
-				modalNode.style.maxWidth = '860px';
-				modalNode.style.width = '92vw';
-			}
+		return checkDisplayed().then(function() {
+			return fs.exec('/usr/libexec/switch2-block/test.sh');
+		}).then(function(res) {
+			return checkDisplayed().then(function() {
+				var lines = (res.stdout || '').trim().split('\n');
+				var complete = lines[lines.length - 1] === '[switch2-block:complete]';
+				if (complete) lines.pop();
+				var ok = res.code === 0 && complete && !res.stderr;
+				ui.showModal(_('Self-Test Results'), [
+					E('strong', {}, ok
+						? _('Router-local checks passed for the committed adapter list.')
+						: _('Isolation or helper checks failed or could not be verified.')),
+					E('p', {}, _('This is a snapshot on the router, not a test from the console. It cannot verify adapter ownership, peer isolation, hardware bypasses or other networks.')),
+					E('p', {}, _('On the isolated network, test each Wi-Fi and dock adapter from the console. Verify the local connection test works and external IPv4 and IPv6 traffic cannot pass.')),
+					E('pre', {}, [ document.createTextNode(lines.join('\n') + (res.stderr ? '\n' + res.stderr : '')) ]),
+					E('div', { 'class': 'right' }, E('button', {
+						'class': 'btn cbi-button-neutral', 'click': ui.hideModal
+					}, _('Close')))
+				]);
+			});
 		}).catch(function(err) {
 			ui.hideModal();
-			ui.addNotification(null, E('p', _('Could not run the self-test: %s').format(err.message)), 'error');
+			ui.addNotification(null, E('p', {}, [ document.createTextNode(_('Could not run the self-test: %s').format(err.message)) ]), 'error');
 		});
 	},
 	render: function(data) {
-		var isFw4 = data[2];
-		var netDefaults = this.detectNetworkDefaults();
-		var m, s, o, enableOpt, forceDhcpOpt, lanOpt, spoofOpt, domainOpt, fwModeOpt;
+		var netDefaults = this.detectNetworkDefaults(data[1]);
+		var m, s, devices, o, enableOpt, lanOpt, spoofOpt, domainOpt;
 
-		m = new form.Map('switch2-block', _('Nintendo Switch 2: Connection Spoofing and Update Blocking'),
-			_('Separate dnsmasq and uHTTPd instances mimic the Nintendo test response. Switch 2 and Switch 1 can pass the connection test without internet access.') + '<br/>' +
-			'<strong style="color:#d9534f;">' + _('Note:') + '</strong> ' +
-			_('If you use a proxy plugin (SSR Plus+, PassWall, or OpenClash), add the Nintendo Connection Test Domain and Switch Helper IP to its bypass list.'));
+		this.map = m = new form.Map(config, _('Nintendo Switch 2: Connection Spoofing and Update Blocking'),
+			_('Use this OpenWrt router as the only gateway for the console. Isolate it from LAN peers and alternate gateways with a dedicated network and client isolation. Disable software and hardware flow offloading and vendor acceleration. A secondary DNS or DHCP server cannot enforce isolation.') + '<br/>' +
+			_('Enroll every Wi-Fi and dock/Ethernet adapter MAC, including any randomized address actually used. Traffic that bypasses this router or uses an unlisted address is not blocked.'));
 
 		s = m.section(form.NamedSection, 'global', 'global', _('Network Isolation'));
 		s.anonymous = true;
 
-		o = s.option(form.DummyValue, '_fw_status', _('Current Firewall'));
-		o.rawhtml = true;
-		o.cfgvalue = function() {
-			return isFw4
-				? '<span style="color:#5cb85c; font-weight:bold;">fw4 (nftables)</span>'
-				: '<span style="color:#f0ad4e; font-weight:bold;">' + _('fw3 (iptables) uses /etc/firewall.user') + '</span>';
-		};
-
 		enableOpt = s.option(form.Flag, 'enabled', _('Enable Spoofing and Update Blocking'),
-			_('This sets up the helper interface, separates the dnsmasq and uHTTPd listeners, and adds firewall rules. Turning it off restores the original network settings.'));
+			_('If the enabled policy cannot be restored at early boot, normal router network startup is held. Use a local console or failsafe to repair it or explicitly disable isolation. Disabling it removes protection for all enrolled adapters.'));
 		enableOpt.rmempty = false;
-
-		forceDhcpOpt = s.option(form.Flag, 'force_dhcp', _('Force DHCP'),
-			_('Use this on a secondary router. It sets dhcp.lan.force=1 so main_dns handles LAN DHCP. This keeps the main router from giving the Switch the wrong DNS server.'));
-		forceDhcpOpt.default = '0';
-		forceDhcpOpt.rmempty = false;
-
-		if (isFw4) {
-			fwModeOpt = s.option(form.ListValue, 'fw_mode', _('fw4 Firewall Rule Mode'),
-				_('Use the native directory on OpenWrt 22.03 or later. On custom builds such as LEDE, use the custom rules file.'));
-			fwModeOpt.value('nftables_d', _('Native directory: /etc/nftables.d/ (OpenWrt)'));
-			fwModeOpt.value('firewall_user', _('Custom rules file: /etc/firewall.user (LEDE)'));
-			fwModeOpt.default = 'firewall_user';
-			fwModeOpt.rmempty = false;
-		}
 
 		lanOpt = s.option(form.Value, 'lan_ip', _('Router LAN IP'),
 			_('The main dnsmasq and LuCI use this IP. The app detects it from the LAN interface.'));
@@ -256,16 +127,15 @@ return view.extend({
 			lanOpt.default = netDefaults.lanIp;
 			lanOpt.placeholder = netDefaults.lanIp;
 		}
-		lanOpt.rmempty = false;
+		lanOpt.rmempty = true;
 
 		spoofOpt = s.option(form.Value, 'spoof_ip', _('Switch Helper IP'),
-			_('A separate IP on br-lan. Use a different address in the same subnet as the Router LAN IP.'));
+			_('Choose an unused IPv4 address in the router LAN subnet, outside the DHCP pool. The helper will bind to it on br-lan.'));
 		spoofOpt.datatype = 'ip4addr';
 		if (netDefaults.spoofIp) {
-			spoofOpt.default = netDefaults.spoofIp;
 			spoofOpt.placeholder = netDefaults.spoofIp;
 		}
-		spoofOpt.rmempty = false;
+		spoofOpt.rmempty = true;
 		spoofOpt.validate = function(section_id, value) {
 			var lanVal = lanOpt.formvalue(section_id);
 			if (lanVal && value === lanVal) {
@@ -289,28 +159,23 @@ return view.extend({
 		domainOpt.rmempty = false;
 
 		o = s.option(form.Button, '_test_btn', _('Connection Self-Test'),
-			_('Click Save & Apply first. The self-test checks the DNS redirect, the 2-byte HTTP response, port 80, and the firewall rules.'));
+			_('Click Save & Apply first. The self-test checks the local DNS answer, exact HTTP response, listener and active isolation policy for all enrolled MACs.'));
 		o.inputtitle = _('Run Self-Test');
-		o.inputstyle = 'apply';
-		o.onclick = L.bind(function() {
-			return this.handleTestSpoof(m, enableOpt, forceDhcpOpt, lanOpt, spoofOpt, domainOpt, fwModeOpt, isFw4, netDefaults);
-		}, this);
+		o.onclick = L.bind(function() { return this.runTest(checkDisplayed); }, this);
 
-		s = m.section(form.GridSection, 'device', _('Controlled Devices'),
-			_('If a listed device uses Automatic (DHCP), it gets the Switch Helper IP as its DNS server. You can also block its internet access.'));
-		s.addremove = true;
-		s.anonymous = true;
+		devices = m.section(form.TableSection, 'device', _('Enrolled adapters'),
+			_('Add a row for each real adapter. Blocking is required for every row. For a previously unchecked adapter, check its enrollment box or remove its row.'));
+		devices.addremove = true;
+		devices.anonymous = true;
 
-		o = s.option(form.Value, 'name', _('Device Name'));
-		o.placeholder = 'Switch2';
-		o.rmempty = false;
+		var nameOpt = devices.option(form.Value, 'name', _('Device Name'));
+		nameOpt.placeholder = 'Switch2';
 
-		o = s.option(form.Value, 'mac', _('MAC Address'));
-		o.datatype = 'macaddr';
-		o.placeholder = '11:22:33:44:55:66';
-		o.rmempty = false;
+		var macOpt = devices.option(form.Value, 'mac', _('MAC Address'));
+		macOpt.datatype = 'macaddr';
+		macOpt.rmempty = false;
 
-		o = s.option(form.Value, 'ip', _('Static IP (Optional)'),
+		o = devices.option(form.Value, 'ip', _('Static IP (Optional)'),
 			_('Leave blank for an automatic IP. The device still gets the Switch Helper IP as its DNS server.'));
 		o.datatype = 'ip4addr';
 		o.placeholder = netDefaults.prefix ? _('Auto-assign (e.g., %s.x)').format(netDefaults.prefix) : _('Auto-assign');
@@ -332,10 +197,55 @@ return view.extend({
 			return true;
 		};
 
-		o = s.option(form.Flag, 'block_wan', _('Block Internet Access'),
-			_('The firewall uses the MAC address to block ICMPv6 and all IPv4 and IPv6 forwarding. This stops updates that use hard-coded IP addresses.'));
-		o.default = '1';
-		o.rmempty = false;
+		var blockOpt = devices.option(form.Flag, 'block_wan', _('Enroll for blocking (required)'));
+		blockOpt.default = '1';
+		blockOpt.rmempty = false;
+
+		var globalFields = [enableOpt, lanOpt, spoofOpt, domainOpt];
+		var adapterFields = [nameOpt, macOpt, o, blockOpt];
+
+		// TableSection normally stages UCI on row edits. Keep incomplete rows in
+		// the browser; only Save may validate and stage the whole adapter list.
+		function keepDraft(fields, id) {
+			fields.forEach(function(field) {
+				uci.set(config, id, field.option, field.formvalue(id));
+			});
+		}
+		function editRows(removeId) {
+			keepDraft(globalFields, 'global');
+			devices.cfgsections().forEach(function(id) {
+				if (id !== removeId) keepDraft(adapterFields, id);
+			});
+			if (removeId != null) uci.remove(config, removeId);
+			else uci.add(config, 'device');
+			return m.render();
+		}
+		devices.handleAdd = function() { return editRows(null); };
+		devices.handleRemove = editRows;
+
+		function fieldsMatch(fields, id, saved) {
+			return fields.every(function(field) {
+				var value = saved[field.option];
+				if (value == null) value = field.default || '';
+				return String(field.formvalue(id) || '') === String(value);
+			});
+		}
+		function checkDisplayed() {
+			// Fetch fresh rpcd data without replacing unsaved local form values.
+			return Promise.all([getPending(), uci.callLoad(config)]).then(function(res) {
+				var changes = res[0].changes, saved = res[1], ids = devices.cfgsections();
+				var changed = Object.keys(changes).some(function(key) { return changes[key].length > 0; });
+				var savedIds = Object.keys(saved).filter(function(id) { return saved[id]['.type'] === 'device'; });
+				if (changed || !saved.global || !fieldsMatch(globalFields, 'global', saved.global) ||
+				    ids.length !== savedIds.length || !ids.every(function(id) {
+					    return savedIds.indexOf(id) !== -1 && fieldsMatch(adapterFields, id, saved[id]);
+				    }))
+					throw new Error(_('Settings are pending, unsaved or no longer match this page. Save & Apply or reload before testing.'));
+				if (saved.global.enabled !== '1')
+					throw new Error(_('Isolation is disabled.'));
+				validateEnrollment();
+			});
+		}
 
 		return m.render();
 	}

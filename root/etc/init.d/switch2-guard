@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# Run after mount_root/uci-defaults and before firewall, dnsmasq and netifd.
+START=12
+
+boot() {
+	# rcS runs boot scripts serially but does not stop on a nonzero exit.
+	# Do not release the queue with an enabled but unverified guard.
+	while [ "$(uci -q get /etc/config/switch2-block.global.enabled)" != 0 ]; do
+		/usr/libexec/switch2-block/policy.sh restore && return 0
+		logger -t switch2-block -p daemon.err 'Cannot restore isolation; holding network startup. Correct configuration from the local console or explicitly disable protection.'
+		sleep 10
+	done
+}

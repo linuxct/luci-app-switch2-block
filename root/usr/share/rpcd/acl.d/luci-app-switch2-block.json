@@ -4,14 +4,11 @@
 		"read": {
 			"uci": [ "switch2-block" ],
 			"ubus": {
-				"file": [ "exec", "stat", "read" ]
+				"file": [ "exec" ],
+				"network.interface.lan": [ "status" ]
 			},
 			"file": {
-				"/usr/libexec/switch2-block/test.sh": [ "exec" ],
-				"/etc/nftables.d/99-switch2-block.nft": [ "read" ],
-				"/etc/firewall.user": [ "read" ],
-				"/usr/sbin/nft": [ "stat" ],
-				"/sbin/fw4": [ "stat" ]
+				"/usr/libexec/switch2-block/test.sh": [ "exec" ]
 			}
 		},
 		"write": {

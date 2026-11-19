@@ -1,8 +1,7 @@
 #!/bin/sh
 
-chmod +x /usr/libexec/switch2-block/apply.sh
-chmod +x /usr/libexec/switch2-block/test.sh
-chmod +x /etc/init.d/switch2-block
+chmod +x /usr/libexec/switch2-block/*.sh
+chmod +x /etc/init.d/switch2-block /etc/init.d/switch2-guard
 
 # 仅在首次安装未初始化时自动探测当前 LAN 网段，防止系统升级覆盖用户自定义配置
 if [ "$(uci -q get switch2-block.global._initialized)" != "1" ]; then
@@ -25,5 +24,9 @@ if [ "$(uci -q get switch2-block.global._initialized)" != "1" ]; then
 	uci commit switch2-block
 fi
 
+uci -q delete switch2-block.global.fw_mode
+uci -q delete switch2-block.global.force_dhcp
+uci commit switch2-block
+/etc/init.d/switch2-guard enable || exit 1
 /etc/init.d/switch2-block enable
 exit 0
