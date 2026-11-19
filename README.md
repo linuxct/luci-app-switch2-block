@@ -3,6 +3,16 @@
 
 本插件让 Switch 2 / Switch 1 在本地通过任天堂连接测试，同时禁止已登记网卡通过本路由器访问互联网。**主机通过连接测试，并不证明外网已经隔离。**
 
+## 安装已签名的 APK（OpenWrt 25.12 及以上）
+
+下载新版 `.apk`，并从本仓库获取[项目公钥](./luci-app-switch2-block-apk.pem)。信任前先核对公钥文件校验值：
+
+```sh
+echo 'cc1834e4ae149c861f6ae203d70304a864ba1cf2b1bbecb338d18fcc8f473296  luci-app-switch2-block-apk.pem' | sha256sum -c -
+```
+
+将公钥和 APK 上传到路由器，以 root 身份将公钥移入 `/etc/apk/keys/`，再通过 LuCI 或 `apk add /tmp/<package>.apk` 安装。添加此公钥后，路由器将信任由本项目签名的软件包；旧的未签名包仍无法通过验证。
+
 ## 启用前
 
 1. 安装、升级、登记网卡期间请让主机保持离线。备份 `/etc/config/` 下的 `network`、`dhcp`、`uhttpd`、`firewall` 和 `switch2-block`。从旧版升级时，旧包的卸载脚本可能移除旧防火墙规则。

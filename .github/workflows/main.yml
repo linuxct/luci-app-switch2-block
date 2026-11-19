@@ -16,7 +16,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -84,21 +84,59 @@ jobs:
           make package/luci-app-switch2-block/compile V=s
 
       - name: Collect built packages
+        env:
+          PACKAGE_FORMAT: ${{ matrix.format }}
         run: |
           mkdir -p release_files
-          find sdk/bin/packages/ -type f \( -name "*switch2-block*.ipk" -o -name "*switch2-block*.apk" \) -exec cp {} release_files/ \;
+          find sdk/bin/packages/ -type f -name "*switch2-block*.${PACKAGE_FORMAT}" -exec cp {} release_files/ \;
           ls -lh release_files/
+
+      - name: Sign and verify APKs
+        if: matrix.format == 'apk'
+        env:
+          APK_SIGNING_PRIVATE_KEY: ${{ secrets.APK_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${APK_SIGNING_PRIVATE_KEY:?Configure the APK_SIGNING_PRIVATE_KEY Actions secret}"
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          umask 077
+          printf '%s\n' "$APK_SIGNING_PRIVATE_KEY" > "$work/signing.pem"
+          unset APK_SIGNING_PRIVATE_KEY
+
+          public_key=luci-app-switch2-block-apk.pem
+          openssl pkey -in "$work/signing.pem" -pubout -out "$work/derived.pem"
+          cmp -s "$work/derived.pem" "luci-app-switch2-block/$public_key" || {
+            echo "Signing secret does not match the published public key" >&2
+            exit 1
+          }
+          mkdir "$work/keys"
+          cp "luci-app-switch2-block/$public_key" "$work/keys/$public_key"
+
+          shopt -s nullglob
+          apks=(release_files/*.apk)
+          ((${#apks[@]})) || { echo "No APKs to sign" >&2; exit 1; }
+          apk=sdk/staging_dir/host/bin/apk
+          # apk-tools 3.0.5 only adds a signature to the first file per invocation.
+          for package in "${apks[@]}"; do
+            "$apk" adbsign --allow-untrusted --reset-signatures --sign-key "$work/signing.pem" "$package"
+          done
+          "$apk" --keys-dir "$work/keys" verify "${apks[@]}"
+          cp "luci-app-switch2-block/$public_key" release_files/
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.format }}
+          if-no-files-found: error
           path: release_files/*
 
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4

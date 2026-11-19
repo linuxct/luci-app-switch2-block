@@ -4,6 +4,16 @@
 
 This LuCI app lets a Switch 2 or Switch 1 pass Nintendo's connection test **locally**, while denying internet access through this router for its enrolled network adapters. Passing the Nintendo test is not evidence of internet isolation.
 
+## Installing a signed APK (OpenWrt 25.12+)
+
+Download the new `.apk` and obtain [the project's public key](./luci-app-switch2-block-apk.pem) from this repository. Verify its file checksum before trusting it:
+
+```sh
+echo 'cc1834e4ae149c861f6ae203d70304a864ba1cf2b1bbecb338d18fcc8f473296  luci-app-switch2-block-apk.pem' | sha256sum -c -
+```
+
+Copy the public key and APK to the router. As root, move the key to `/etc/apk/keys/` and install the APK with LuCI or `apk add /tmp/<package>.apk`. Trusting this key authorizes packages signed by this project. Older unsigned builds will still be rejected; use a freshly built signed APK.
+
 ## Before enabling
 
 1. Keep the console offline throughout installation, upgrades, and enrollment. Back up `/etc/config/{network,dhcp,uhttpd,firewall,switch2-block}`. On upgrade from the old firewall-include implementation, the **old package's** removal script may stop its rules.
