@@ -46,8 +46,8 @@ jobs:
           SDK_FILE=$(curl -sL "$SDK_URL" | grep -oE "openwrt-sdk-${VER}-x86-64_gcc-[^\"']+\.tar\.(xz|zst)" | head -n 1)
           echo "Downloading ${SDK_URL}${SDK_FILE}..."
           wget -q "${SDK_URL}${SDK_FILE}"
-          tar -xf "$SDK_FILE"
-          mv openwrt-sdk-* sdk
+          mkdir -p sdk
+          tar -xf "$SDK_FILE" -C sdk --strip-components=1
 
       - name: Prepare feeds and package
         run: |
