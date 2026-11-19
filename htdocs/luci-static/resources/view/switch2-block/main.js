@@ -54,7 +54,7 @@ return view.extend({
 		var curFwMode = fwModeOpt ? (fwModeOpt.formvalue('global') || savedFwMode) : savedFwMode;
 
 		if (curEnabled !== '1') {
-			ui.addNotification(null, E('p', _('当前未启用「启用伪装与断网保护」，请先勾选并点击「保存并应用」后再执行自检。')), 'warning');
+			ui.addNotification(null, E('p', _('Spoof & Blocker is currently disabled. Please enable it and click Save & Apply first.')), 'warning');
 			return;
 		}
 
@@ -68,12 +68,12 @@ return view.extend({
 			curSpoofIp !== savedSpoofIp ||
 			curDomain !== savedDomain ||
 			curFwMode !== savedFwMode) {
-			ui.addNotification(null, E('p', _('检测到当前页面参数或受控设备列表已修改但尚未生效，请先点击底部的「保存并应用」后再进行自检！')), 'warning');
+			ui.addNotification(null, E('p', _('Unsaved changes detected on this page or device list. Please click Save & Apply before running self-test!')), 'warning');
 			return;
 		}
 
 		if (!curSpoofIp) {
-			ui.addNotification(null, E('p', _('伪装辅助 IP 为空，请先填写并点击「保存并应用」。')), 'error');
+			ui.addNotification(null, E('p', _('Spoof Helper IP is empty. Please enter an IP and click Save & Apply.')), 'error');
 			return;
 		}
 
@@ -82,8 +82,8 @@ return view.extend({
 			return dev.mac && (dev.block_wan === '1' || dev.block_wan === undefined);
 		});
 
-		ui.showModal(_('正在执行连通性伪装自检...'), [
-			E('p', { 'class': 'spinning' }, _('正在调用 test.sh 验证 DNS 劫持、uHTTPd 2 字节响应、80 端口占用及防火墙规则...'))
+		ui.showModal(_('Running Connectivity Self-Test...'), [
+			E('p', { 'class': 'spinning' }, _('Calling test.sh to verify DNS hijacking, uHTTPd 2-byte response, port 80 usage, and firewall rules...'))
 		]);
 
 		var targetFwFile = (isFw4 && curFwMode === 'nftables_d')
@@ -133,70 +133,70 @@ return view.extend({
 			var portStatusColor, portStatusText;
 			if (!portOwner) {
 				portStatusColor = '#d9534f';
-				portStatusText = _('异常：未检测到 ' + curSpoofIp + ':80 的监听进程 (uHTTPd 辅助实例未启动)');
+				portStatusText = _('Abnormal: No listener detected on %s:80 (uHTTPd helper instance not running)').format(curSpoofIp);
 			} else if (portOwner.indexOf('uhttpd') !== -1 && portOwner.indexOf('nginx') === -1) {
 				portStatusColor = 'green';
-				portStatusText = _('正常 (已由 uHTTPd 独占监听 ' + curSpoofIp + ':80，无端口冲突)');
+				portStatusText = _('Normal (Exclusively bound by uHTTPd on %s:80, no port conflict)').format(curSpoofIp);
 			} else {
 				var procMatch = portOwner.match(/\(\("([^"]+)"/);
-				var procName = procMatch ? procMatch[1] : _('其他 Web 服务');
+				var procName = procMatch ? procMatch[1] : _('Other Web Service');
 				portStatusColor = '#d9534f';
-				portStatusText = _('冲突：80 端口被「' + procName + '」全局占用！请将其改为仅监听主 LAN IP (' + curLanIp + ':80)');
+				portStatusText = _('Conflict: Port 80 is globally occupied by "%s"! Please bind it only to Main LAN IP (%s:80)').format(procName, curLanIp);
 			}
 
 			// 4. 防火墙阻断规则状态
 			var fwStatusColor, fwStatusText;
 			if (!hasBlockDevice) {
 				fwStatusColor = 'green';
-				fwStatusText = _('已跳过 (受控列表未启用断外网设备)');
+				fwStatusText = _('Skipped (No device enabled for WAN blocking)');
 			} else if (fwRuleInFile && fwActiveCount > 0) {
 				fwStatusColor = 'green';
-				fwStatusText = _('已写入 ' + targetFwFile + ' 且内核防火墙已实时生效 (共 ' + fwActiveCount + ' 条规则)');
+				fwStatusText = _('Written to %s and active in kernel firewall (%d rules)').format(targetFwFile, fwActiveCount);
 			} else if (fwRuleInFile && fwActiveCount === 0) {
 				fwStatusColor = '#d9534f';
-				fwStatusText = _('规则已写入 ' + targetFwFile + '，但内核防火墙未加载！建议切换规则写入方式后重新保存');
+				fwStatusText = _('Written to %s, but not loaded in kernel! Try switching firewall rule mode and re-applying').format(targetFwFile);
 			} else {
 				fwStatusColor = '#f0ad4e';
-				fwStatusText = _('未在 ' + targetFwFile + ' 检测到阻断规则 (请确认已点击「保存并应用」)');
+				fwStatusText = _('No blocking rules found in %s (Please ensure Save & Apply was clicked)').format(targetFwFile);
 			}
 
 			var preBaseStyle = 'background:#f5f5f5; padding:8px 10px; border:1px solid #e3e3e3; border-radius:4px; font-family:monospace; font-size:12px; line-height:1.45; white-space:pre; overflow-x:auto; overflow-y:auto; margin-bottom:10px;';
 
-			var modalNode = ui.showModal(_('自检结果'), [
+			var modalNode = ui.showModal(_('Self-Test Results'), [
 				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('1. DNS 劫持状态：')),
+					E('strong', {}, _('1. DNS Hijacking Status: ')),
 					E('span', { 'style': 'color:' + (dnsOk ? 'green' : 'red') + '; font-weight:bold;' },
-						dnsOk ? _('正常 (已解析至 ' + curSpoofIp + ')') : _('异常 (未命中目标 IP，请检查全局 DNS 重定向或代理劫持)'))
+						dnsOk ? _('Normal (Resolved to %s)').format(curSpoofIp) : _('Abnormal (Target IP not matched; check global DNS redirect or proxy hijacking)'))
 				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:110px;' }, dnsOut || _('无输出')),
+				E('pre', { 'style': preBaseStyle + 'max-height:110px;' }, dnsOut || _('No output')),
 
 				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('2. HTTP 伪装状态：')),
+					E('strong', {}, _('2. HTTP Spoof Status: ')),
 					E('span', { 'style': 'color:' + (httpOk ? 'green' : 'red') + '; font-weight:bold;' },
-						httpOk ? _('正常 (返回 200 OK 且正文精确为 2 字节 "ok")') : _('异常 (响应状态或正文字节不符，当前字节数: ' + bodyLen + ')'))
+						httpOk ? _('Normal (Returned 200 OK with exact 2-byte body "ok")') : _('Abnormal (Unexpected status or body length; current bytes: %s)').format(bodyLen))
 				]),
 				E('pre', { 'style': preBaseStyle + 'max-height:165px;' },
-					(httpHeader ? httpHeader + '\n\n[Body: "' + body + '" | Bytes: ' + bodyLen + ']' : rawOut || _('无输出'))),
+					(httpHeader ? httpHeader + '\n\n[Body: "' + body + '" | Bytes: ' + bodyLen + ']' : rawOut || _('No output'))),
 
 				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('3. 80 端口占用检查：')),
+					E('strong', {}, _('3. Port 80 Usage Check: ')),
 					E('span', { 'style': 'color:' + portStatusColor + '; font-weight:bold;' }, portStatusText)
 				]),
 				E('pre', { 'style': preBaseStyle + 'max-height:80px;' },
-					portOwner || _('未检测到相关 80 端口监听记录')),
+					portOwner || _('No port 80 listener records detected')),
 
 				E('div', { 'style': 'margin-bottom: 6px;' }, [
-					E('strong', {}, _('4. 防火墙阻断规则状态：')),
+					E('strong', {}, _('4. Firewall Blocking Rules: ')),
 					E('span', { 'style': 'color:' + fwStatusColor + '; font-weight:bold;' }, fwStatusText)
 				]),
-				E('pre', { 'style': preBaseStyle + 'max-height:180px;' },
-					fwActiveRules || _('内核防火墙中暂无生效的 Switch 2 阻断规则')),
+				E('pre', { 'style': preBaseStyle + 'max-height:140px;' },
+					fwActiveRules || _('No active Switch 2 blocking rules found in kernel firewall')),
 
 				E('div', { 'class': 'right', 'style': 'margin-top: 12px;' }, [
 					E('button', {
 						'class': 'btn cbi-button-neutral',
 						'click': ui.hideModal
-					}, _('关闭'))
+					}, _('Close'))
 				])
 			]);
 
@@ -207,7 +207,7 @@ return view.extend({
 			}
 		}).catch(function(err) {
 			ui.hideModal();
-			ui.addNotification(null, E('p', _('检测执行失败: ') + err.message), 'error');
+			ui.addNotification(null, E('p', _('Self-test execution failed: ') + err.message), 'error');
 		});
 	},
 	render: function(data) {
@@ -215,42 +215,42 @@ return view.extend({
 		var netDefaults = this.detectNetworkDefaults();
 		var m, s, o, enableOpt, forceDhcpOpt, lanOpt, spoofOpt, domainOpt, fwModeOpt;
 
-		m = new form.Map('switch2-block', _('Nintendo Switch 2 联网伪装与系统更新阻断'),
-			_('通过独立 dnsmasq 实例与 uHTTPd 伪装响应，使 Switch 2 / Switch 1 在完全断绝外网更新的情况下通过局域网连接测试。') + '<br/>' +
-			'<strong style="color:#d9534f;">' + _('提示：') + '</strong>' +
-			_('若路由器启用了 SSR Plus+ / PassWall / OpenClash 等代理插件，请务必将「任天堂联网测试域名」及「Switch 专用伪装辅助 IP」加入不走代理的白名单，防止流量被代理插件劫持。'));
+		m = new form.Map('switch2-block', _('Nintendo Switch 2 Connection Spoof & Update Blocker'),
+			_('Emulate Nintendo connection test responses via isolated dnsmasq and uHTTPd instances so Switch 2 / Switch 1 can pass network checks without external internet access.') + '<br/>' +
+			'<strong style="color:#d9534f;">' + _('Note:') + '</strong> ' +
+			_('If proxy plugins (SSR Plus+ / PassWall / OpenClash) are enabled, add the Nintendo test domain and Spoof Helper IP to the bypass whitelist to prevent traffic hijacking.'));
 
-		s = m.section(form.NamedSection, 'global', 'global', _('基础网络隔离设置'));
+		s = m.section(form.NamedSection, 'global', 'global', _('Basic Network Isolation Settings'));
 		s.anonymous = true;
 
-		o = s.option(form.DummyValue, '_fw_status', _('当前固件防火墙架构'));
+		o = s.option(form.DummyValue, '_fw_status', _('Current Firewall Architecture'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
 			return isFw4
 				? '<span style="color:#5cb85c; font-weight:bold;">fw4 (nftables)</span>'
-				: '<span style="color:#f0ad4e; font-weight:bold;">fw3 (iptables) - 自动使用 /etc/firewall.user</span>';
+				: '<span style="color:#f0ad4e; font-weight:bold;">' + _('fw3 (iptables) - Auto-uses /etc/firewall.user') + '</span>';
 		};
 
-		enableOpt = s.option(form.Flag, 'enabled', _('启用伪装与断网保护'),
-			_('开启后将自动配置辅助接口、分离 dnsmasq/uHTTPd 监听并注入防火墙阻断规则；关闭后自动无损还原默认网络配置。'));
+		enableOpt = s.option(form.Flag, 'enabled', _('Enable Spoof & Update Blocker'),
+			_('Automatically configure helper interface, isolate dnsmasq/uHTTPd listeners, and inject firewall blocking rules; restores original settings cleanly when disabled.'));
 		enableOpt.rmempty = false;
 
-		forceDhcpOpt = s.option(form.Flag, 'force_dhcp', _('开启强制 DHCP'),
-			_('旁路由模式推荐开启。强制由本路由器的 main_dns 接管局域网 DHCP 分配（即设置 dhcp.lan.force=1），防止主路由抢先回应导致 Switch 2 获取到错误的 DNS。'));
+		forceDhcpOpt = s.option(form.Flag, 'force_dhcp', _('Enable Force DHCP'),
+			_('Recommended for bypass/secondary gateway mode. Forces main_dns to handle LAN DHCP (sets dhcp.lan.force=1) so the main router will not assign wrong DNS.'));
 		forceDhcpOpt.default = '0';
 		forceDhcpOpt.rmempty = false;
 
 		if (isFw4) {
-			fwModeOpt = s.option(form.ListValue, 'fw_mode', _('fw4 防火墙规则写入方式'),
-				_('官方原版 OpenWrt 22.03+ 推荐选择「原生规则目录」；LEDE 等带自定义规则页面的定制固件推荐选择「自定义规则文件」。'));
-			fwModeOpt.value('nftables_d', _('写入 /etc/nftables.d/ 原生规则目录（官方原版通用）'));
-			fwModeOpt.value('firewall_user', _('写入 /etc/firewall.user 自定义规则文件（LEDE 固件默认推荐）'));
+			fwModeOpt = s.option(form.ListValue, 'fw_mode', _('fw4 Firewall Rule Mode'),
+				_('Official OpenWrt 22.03+ recommends Native Rule Directory; custom firmware like LEDE recommends Custom Rules File.'));
+			fwModeOpt.value('nftables_d', _('Write to /etc/nftables.d/ native directory (Official OpenWrt)'));
+			fwModeOpt.value('firewall_user', _('Write to /etc/firewall.user custom script (Recommended for LEDE)'));
 			fwModeOpt.default = 'firewall_user';
 			fwModeOpt.rmempty = false;
 		}
 
-		lanOpt = s.option(form.Value, 'lan_ip', _('路由器主 LAN IP'),
-			_('主 dnsmasq 与后台管理界面监听的 IP 地址（自动探测当前 LAN 口 IP）。'));
+		lanOpt = s.option(form.Value, 'lan_ip', _('Router Main LAN IP'),
+			_('IP address for main dnsmasq and LuCI web management (auto-detected from LAN interface).'));
 		lanOpt.datatype = 'ip4addr';
 		if (netDefaults.lanIp) {
 			lanOpt.default = netDefaults.lanIp;
@@ -258,8 +258,8 @@ return view.extend({
 		}
 		lanOpt.rmempty = false;
 
-		spoofOpt = s.option(form.Value, 'spoof_ip', _('Switch 专用伪装辅助 IP'),
-			_('在 br-lan 上创建的独立虚拟接口 IP，必须与主 LAN IP 在同一网段且不能相同。'));
+		spoofOpt = s.option(form.Value, 'spoof_ip', _('Switch Spoof Helper IP'),
+			_('Virtual alias IP created on br-lan. Must be in the same subnet as Main LAN IP and not identical.'));
 		spoofOpt.datatype = 'ip4addr';
 		if (netDefaults.spoofIp) {
 			spoofOpt.default = netDefaults.spoofIp;
@@ -269,71 +269,71 @@ return view.extend({
 		spoofOpt.validate = function(section_id, value) {
 			var lanVal = lanOpt.formvalue(section_id);
 			if (lanVal && value === lanVal) {
-				return _('伪装辅助 IP 不能与路由器主 LAN IP 相同！');
+				return _('Spoof Helper IP cannot be identical to Router Main LAN IP!');
 			}
 			if (lanVal && value) {
 				var p1 = lanVal.split('.').slice(0, 3).join('.');
 				var p2 = value.split('.').slice(0, 3).join('.');
 				if (p1 !== p2) {
-					return _('伪装辅助 IP 必须与主 LAN IP 处于同一 /24 网段（如 ' + p1 + '.254）！');
+					return _('Spoof Helper IP must be in the same /24 subnet as Main LAN IP (e.g., %s.254)!').format(p1);
 				}
 			}
 			return true;
 		};
 
-		domainOpt = s.option(form.Value, 'test_domain', _('任天堂联网测试域名'),
-			_('默认拦截 ctest.p01.ctest.srv.nintendo.net，通常无需修改。'));
+		domainOpt = s.option(form.Value, 'test_domain', _('Nintendo Connection Test Domain'),
+			_('Defaults to ctest.p01.ctest.srv.nintendo.net. Usually no need to change.'));
 		domainOpt.datatype = 'hostname';
 		domainOpt.default = 'ctest.p01.ctest.srv.nintendo.net';
 		domainOpt.placeholder = 'ctest.p01.ctest.srv.nintendo.net';
 		domainOpt.rmempty = false;
 
-		o = s.option(form.Button, '_test_btn', _('服务连通性自检'),
-			_('保存并应用后，点击此按钮调用 test.sh 验证 DNS 解析、HTTP 2 字节响应及防火墙状态。'));
-		o.inputtitle = _('立即测试伪装服务');
+		o = s.option(form.Button, '_test_btn', _('Service Connectivity Self-Test'),
+			_('After clicking Save & Apply, click here to verify DNS hijacking, HTTP 2-byte response, port 80 usage, and firewall rules.'));
+		o.inputtitle = _('Run Connectivity Self-Test');
 		o.inputstyle = 'apply';
 		o.onclick = L.bind(function() {
 			return this.handleTestSpoof(m, enableOpt, forceDhcpOpt, lanOpt, spoofOpt, domainOpt, fwModeOpt, isFw4, netDefaults);
 		}, this);
 
-		s = m.section(form.GridSection, 'device', _('受控主机列表 (MAC 精准下发与防火墙兜底)'),
-			_('列出的设备在 Wi-Fi 设置为「自动获取 (DHCP)」时，将自动分配专属伪装 DNS，并可选通过防火墙彻底封禁外网访问。'));
+		s = m.section(form.GridSection, 'device', _('Controlled Devices (MAC-based DNS & Firewall Isolation)'),
+			_('Listed devices set to Automatic (DHCP) will receive the dedicated spoof DNS and optional WAN isolation.'));
 		s.addremove = true;
 		s.anonymous = true;
 
-		o = s.option(form.Value, 'name', _('设备备注'));
+		o = s.option(form.Value, 'name', _('Device Name'));
 		o.placeholder = 'Switch2';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'mac', _('MAC 地址'));
+		o = s.option(form.Value, 'mac', _('MAC Address'));
 		o.datatype = 'macaddr';
 		o.placeholder = '11:22:33:44:55:66';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'ip', _('分配静态 IP (可选)'),
-			_('留空则由路由器自动分配动态 IP，并同样下发专属伪装 DNS。'));
+		o = s.option(form.Value, 'ip', _('Static IP (Optional)'),
+			_('Leave blank for dynamic DHCP assignment with dedicated spoof DNS.'));
 		o.datatype = 'ip4addr';
-		o.placeholder = netDefaults.prefix ? _('留空自动分配 (如 ' + netDefaults.prefix + '.x)') : _('留空自动分配');
+		o.placeholder = netDefaults.prefix ? _('Auto-assign (e.g., %s.x)').format(netDefaults.prefix) : _('Auto-assign');
 		o.rmempty = true;
 		o.validate = function(section_id, value) {
 			if (!value) return true;
 			var lanVal = lanOpt.formvalue('global');
 			var spoofVal = spoofOpt.formvalue('global');
 			if (value === lanVal || value === spoofVal) {
-				return _('静态 IP 不能与路由器主 IP 或伪装辅助 IP 相同！');
+				return _('Static IP cannot be identical to Main LAN IP or Spoof Helper IP!');
 			}
 			if (lanVal) {
 				var p1 = lanVal.split('.').slice(0, 3).join('.');
 				var p2 = value.split('.').slice(0, 3).join('.');
 				if (p1 !== p2) {
-					return _('静态 IP 必须与路由器主 LAN IP 处于同一网段（' + p1 + '.x）！');
+					return _('Static IP must be in the same subnet as Main LAN IP (%s.x)!').format(p1);
 				}
 			}
 			return true;
 		};
 
-		o = s.option(form.Flag, 'block_wan', _('防火墙彻底断外网'),
-			_('注入防火墙规则拦截该 MAC 的 IPv6 ICMPv6 寻址及所有 IPv4/IPv6 外网转发流量，防止后台硬编码 IP 偷跑更新。'));
+		o = s.option(form.Flag, 'block_wan', _('Block WAN via Firewall'),
+			_('Inject firewall rules to block IPv6 ICMPv6 and all IPv4/IPv6 WAN forwarding for this MAC to prevent hardcoded IP leaks.'));
 		o.default = '1';
 		o.rmempty = false;
 
