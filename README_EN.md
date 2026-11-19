@@ -1,4 +1,7 @@
 # luci-app-switch2-block
+
+**English** | [简体中文](./README.md)
+
 Allows Switch 2 / Switch 1 to pass the local network connection test while completely blocking external internet updates via a standalone `dnsmasq` instance and spoofed `uHTTPd` responses. At the same time, it automatically generates firewall rules to prevent the Switch 2 from accessing the internet, eliminating the risk of accidental system updates or triggering a "supernag".
 
 ## I. Features:
