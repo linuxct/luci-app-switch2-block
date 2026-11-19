@@ -6,7 +6,7 @@ Allows Switch 2 / Switch 1 to pass the local network connection test while compl
 
 ## I. Features:
 1. This is an OpenWRT soft-router plugin that uses a standalone `dnsmasq` instance and spoofed `uHTTPd` responses to let the Switch 2 pass the LAN connection test while completely isolated from external updates.  
-   Enabling this plugin will not affect normal internet access or proxy traffic for other devices on your network.
+  💡 **Enabling this plugin will not affect normal internet access or proxy traffic for other devices on your network.**
 
 2. Compatible with OpenWRT firmware versions 19.XX through 25.XX. Compiled in `.ipk` format by default. If you need the `.apk` format, please compile it yourself. *(Apologies for not providing `.apk` builds, as my own LEDE firmware uses `.ipk` packages.)*
 
