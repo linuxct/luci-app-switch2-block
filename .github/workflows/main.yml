@@ -40,7 +40,7 @@ jobs:
         run: |
           SDK_URL="https://openwrt.org{{ matrix.sdk_ver }}/targets/x86/64/"
           SDK_FILE=$(curl -sL "$SDK_URL" | grep -oE "openwrt-sdk-${{ matrix.sdk_ver }}-x86-64_gcc-[^\"']+\.tar\.(xz|zst)" | head -n 1)
-          echo "Downloading $SDK_FILE..."
+          echo "Downloading ${SDK_URL}${SDK_FILE}..."
           wget -q "${SDK_URL}${SDK_FILE}"
           tar -xf "$SDK_FILE"
           mv openwrt-sdk-* sdk
