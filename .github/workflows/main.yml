@@ -43,11 +43,6 @@ jobs:
           path: sdk
           key: openwrt-sdk-v1-${{ matrix.sdk_ver }}
 
-      - name: Install minimal dependencies
-        run: |
-          sudo apt-get update -o Acquire::http::Timeout="15"
-          sudo apt-get install -y --no-install-recommends zstd
-
       - name: Download and setup SDK (Skipped if cached)
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         env:
